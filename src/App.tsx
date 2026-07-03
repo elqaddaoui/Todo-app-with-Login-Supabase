@@ -3357,6 +3357,256 @@ function MobileCalendarMonth({
   )
 }
 
+/* ============================================================
+   MOBILE-ONLY Week + Day time grids with drag-and-drop (dnd-kit)
+   ------------------------------------------------------------
+   react-big-calendar's DnD addon is mouse-driven and does not work
+   reliably on touch for the Week/Day (time-slot) views. These
+   self-contained grids give phones real touch drag-and-drop:
+     • Week: drag a task chip between day columns (day changes).
+     • Day:  drag a task chip between hour rows (time changes).
+   They mirror MobileCalendarMonth and reuse the same TouchSensor
+   primitives so behavior stays consistent across the app. Desktop
+   is completely untouched.
+   ============================================================ */
+
+// Hours rendered in the mobile Day/Week time grids (7:00 → 21:00).
+const MOBILE_DAY_START_HOUR = 7
+const MOBILE_DAY_END_HOUR = 21
+const mobileHours = Array.from(
+  { length: MOBILE_DAY_END_HOUR - MOBILE_DAY_START_HOUR + 1 },
+  (_, i) => MOBILE_DAY_START_HOUR + i,
+)
+
+function mobileEventChipStyle(task: Task) {
+  const hex = priorityMeta[task.priority].hex
+  const isDark = typeof document !== 'undefined' && document.documentElement.classList.contains('dark')
+  return { background: isDark ? hex + '33' : hex + '22', borderLeft: `3px solid ${hex}` }
+}
+
+// A draggable task chip shared by the mobile Week / Day grids.
+function MobileTimeEventChip({ task, onOpen }: { task: Task; onOpen: () => void }) {
+  const dndEnabled = useDndEnabled()
+  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
+    id: `cal-time-event-${task.id}`,
+    data: { taskId: task.id },
+    disabled: !dndEnabled,
+  })
+  return (
+    <button
+      ref={setNodeRef}
+      {...(dndEnabled ? attributes : {})}
+      {...(dndEnabled ? listeners : {})}
+      type='button'
+      onClick={onOpen}
+      className={cn('cal-m-event', isDragging && 'cal-m-event-dragging')}
+      style={mobileEventChipStyle(task)}
+      aria-label={`Task ${task.title}. Drag to reschedule.`}
+    >
+      <span className='cal-m-event-title'>{task.title}</span>
+      {task.time && <span className='cal-m-event-time'>{task.time}</span>}
+    </button>
+  )
+}
+
+// A droppable cell (one day column × one hour row) for the Week/Day grid.
+function MobileTimeDropCell({
+  dropId, data, tasks, onOpenTask, onSelectSlot,
+}: {
+  dropId: string
+  data: Record<string, unknown>
+  tasks: Task[]
+  onOpenTask: (id: string) => void
+  onSelectSlot: () => void
+}) {
+  const { setNodeRef, isOver } = useDroppable({ id: dropId, data })
+  return (
+    <div
+      ref={setNodeRef}
+      className={cn('cal-m-slot', isOver && 'cal-m-slot-over')}
+      onClick={onSelectSlot}
+    >
+      {tasks.map(t => (
+        <MobileTimeEventChip key={t.id} task={t} onOpen={() => onOpenTask(t.id)} />
+      ))}
+    </div>
+  )
+}
+
+// Shared DnD wrapper + overlay for the Week / Day mobile grids.
+function MobileTimeGrid({
+  children, events, onDrop, onSetActive, activeTaskId,
+}: {
+  children: React.ReactNode
+  events: (Event & { resource: Task })[]
+  onDrop: (taskId: string, over: Record<string, unknown>) => void
+  onSetActive: (id: string | null) => void
+  activeTaskId: string | null
+}) {
+  const sensors = useSensors(
+    useSensor(TouchSensor, { activationConstraint: { delay: 180, tolerance: 8 } }),
+    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+  )
+  const activeTask: Task | null = activeTaskId
+    ? (events.find(e => e.resource.id === activeTaskId)?.resource ?? null)
+    : null
+  return (
+    <DndContext
+      sensors={sensors}
+      collisionDetection={closestCenter}
+      onDragStart={(e: DragStartEvent) => onSetActive((e.active.data.current as any)?.taskId ?? null)}
+      onDragEnd={(e: DragEndEvent) => {
+        const taskId = (e.active.data.current as any)?.taskId as string | undefined
+        const over = e.over?.data.current as Record<string, unknown> | undefined
+        if (taskId && over) onDrop(taskId, over)
+        onSetActive(null)
+      }}
+      onDragCancel={() => onSetActive(null)}
+    >
+      {children}
+      <DragOverlay dropAnimation={null}>
+        {activeTask && (
+          <div className='cal-m-event cal-m-event-overlay' style={mobileEventChipStyle(activeTask)}>
+            <span className='cal-m-event-title'>{activeTask.title}</span>
+          </div>
+        )}
+      </DragOverlay>
+    </DndContext>
+  )
+}
+
+function MobileCalendarWeek({
+  date, events, onMoveTask, onOpenTask, onSelectSlot,
+}: {
+  date: Date
+  events: (Event & { resource: Task })[]
+  onMoveTask: (taskId: string, dayKey: string, hour: number) => void
+  onOpenTask: (id: string) => void
+  onSelectSlot: (day: Date, hour: number) => void
+}) {
+  const [activeTaskId, setActiveTaskId] = useState<string | null>(null)
+  const weekDays = useMemo(() => {
+    const first = startOfWeek(date, { weekStartsOn: 1 })
+    return eachDayOfInterval({ start: first, end: endOfWeek(date, { weekStartsOn: 1 }) })
+  }, [date])
+
+  // Bucket events by "day|hour" so each cell knows what to render.
+  const byCell = useMemo(() => {
+    const map = new Map<string, Task[]>()
+    for (const e of events) {
+      const start = e.start as Date
+      const key = `${format(start, 'yyyy-MM-dd')}|${start.getHours()}`
+      const arr = map.get(key) || []
+      arr.push(e.resource)
+      map.set(key, arr)
+    }
+    for (const arr of map.values()) sortTasks(arr)
+    return map
+  }, [events])
+
+  return (
+    <MobileTimeGrid
+      events={events}
+      activeTaskId={activeTaskId}
+      onSetActive={setActiveTaskId}
+      onDrop={(taskId, over) => {
+        const dayKey = over.dayKey as string | undefined
+        const hour = over.hour as number | undefined
+        if (dayKey != null && hour != null) onMoveTask(taskId, dayKey, hour)
+      }}
+    >
+      <div className='cal-m-time-grid'>
+        <div className='cal-m-week-head'>
+          <div className='cal-m-time-gutter-head' />
+          {weekDays.map(d => (
+            <div key={d.toISOString()} className={cn('cal-m-week-day-head', isToday(d) && 'cal-m-week-day-today')}>
+              <span className='cal-m-week-day-name'>{format(d, 'EEE')}</span>
+              <span className='cal-m-week-day-num'>{format(d, 'd')}</span>
+            </div>
+          ))}
+        </div>
+        <div className='cal-m-time-body'>
+          {mobileHours.map(hour => (
+            <div key={hour} className='cal-m-time-row'>
+              <div className='cal-m-time-gutter'>{format(new Date(2000, 0, 1, hour), 'ha')}</div>
+              {weekDays.map(d => {
+                const dayKey = format(d, 'yyyy-MM-dd')
+                return (
+                  <MobileTimeDropCell
+                    key={dayKey + hour}
+                    dropId={`cal-week-${dayKey}-${hour}`}
+                    data={{ dayKey, hour }}
+                    tasks={byCell.get(`${dayKey}|${hour}`) || []}
+                    onOpenTask={onOpenTask}
+                    onSelectSlot={() => onSelectSlot(d, hour)}
+                  />
+                )
+              })}
+            </div>
+          ))}
+        </div>
+      </div>
+    </MobileTimeGrid>
+  )
+}
+
+function MobileCalendarDay({
+  date, events, onMoveTask, onOpenTask, onSelectSlot,
+}: {
+  date: Date
+  events: (Event & { resource: Task })[]
+  onMoveTask: (taskId: string, hour: number) => void
+  onOpenTask: (id: string) => void
+  onSelectSlot: (hour: number) => void
+}) {
+  const [activeTaskId, setActiveTaskId] = useState<string | null>(null)
+  const dayKey = format(date, 'yyyy-MM-dd')
+  const dayEvents = useMemo(
+    () => events.filter(e => format(e.start as Date, 'yyyy-MM-dd') === dayKey),
+    [events, dayKey],
+  )
+  const byHour = useMemo(() => {
+    const map = new Map<number, Task[]>()
+    for (const e of dayEvents) {
+      const h = (e.start as Date).getHours()
+      const arr = map.get(h) || []
+      arr.push(e.resource)
+      map.set(h, arr)
+    }
+    for (const arr of map.values()) sortTasks(arr)
+    return map
+  }, [dayEvents])
+
+  return (
+    <MobileTimeGrid
+      events={dayEvents}
+      activeTaskId={activeTaskId}
+      onSetActive={setActiveTaskId}
+      onDrop={(taskId, over) => {
+        const hour = over.hour as number | undefined
+        if (hour != null) onMoveTask(taskId, hour)
+      }}
+    >
+      <div className='cal-m-time-grid cal-m-day-grid'>
+        <div className='cal-m-time-body'>
+          {mobileHours.map(hour => (
+            <div key={hour} className='cal-m-time-row cal-m-day-row'>
+              <div className='cal-m-time-gutter'>{format(new Date(2000, 0, 1, hour), 'ha')}</div>
+              <MobileTimeDropCell
+                dropId={`cal-day-${dayKey}-${hour}`}
+                data={{ dayKey, hour }}
+                tasks={byHour.get(hour) || []}
+                onOpenTask={onOpenTask}
+                onSelectSlot={() => onSelectSlot(hour)}
+              />
+            </div>
+          ))}
+        </div>
+      </div>
+    </MobileTimeGrid>
+  )
+}
+
 function CalendarPage() {
   const tasks = useData(s => s.tasks)
   const addTask = useData(s => s.addTask)
@@ -3370,14 +3620,12 @@ function CalendarPage() {
   // can opt in to it explicitly via the view switcher.)
   const [view, setView] = useState<View>(isMobile ? Views.DAY : Views.WEEK)
   const [date, setDate] = useState(new Date())
-  const [outsideTaskId, setOutsideTaskId] = useState<string | null>(null)
-  const [outsideQuery, setOutsideQuery] = useState('')
-  // On mobile, the drag rail lives in a collapsible sheet to free vertical space.
-  const [mobileRailOpen, setMobileRailOpen] = useState(false)
-  // Captures the calendar slot the user clicked so the NamePrompt modal can
-  // read the start/end/view context when the user confirms a title. Replaces
-  // the old browser `prompt('Task title')` call in onSelectSlot.
+  // Tapping a calendar slot captures its start/end/view here, then opens a small
+  // chooser popup that lets the user create a New Task or attach an Existing one.
   const [slotDraft, setSlotDraft] = useState<null | { start: Date; end: Date; view: View }>(null)
+  // Which step of the slot flow is showing: the New/Existing chooser, the
+  // new-task name prompt, or the searchable existing-task picker.
+  const [slotStep, setSlotStep] = useState<'choose' | 'new' | 'existing'>('choose')
 
   const events = useMemo(() => tasks.filter(t => t.dueDate && !t.archived).map(t => {
     const [y, m, dv] = t.dueDate!.split('-').map(Number)
@@ -3388,12 +3636,6 @@ function CalendarPage() {
   }), [tasks])
 
   const taskMap = useMemo(() => new Map(tasks.map(t => [t.id, t])), [tasks])
-  const eventMap = useMemo(() => new Map(events.map(e => [e.resource.id, e])), [events])
-  const outsideTasks = useMemo(() => sortTasks(tasks.filter(t => !t.archived).filter(t => {
-    if (!outsideQuery.trim()) return true
-    const q = outsideQuery.trim().toLowerCase()
-    return t.title.toLowerCase().includes(q) || (t.description || '').toLowerCase().includes(q)
-  })), [tasks, outsideQuery])
 
   useEffect(() => {
     if (!calendarTarget) return
@@ -3428,18 +3670,51 @@ function CalendarPage() {
     })
   }
 
-  const dragFromOutsideItem = useMemo(() => {
-    if (!outsideTaskId) return null
-    const task = taskMap.get(outsideTaskId)
-    if (!task) return null
-    return eventMap.get(task.id) || ({
-      title: task.title,
-      start: new Date(),
-      end: new Date(Date.now() + Math.max(task.estimatedMinutes || 60, 30) * 60000),
-      allDay: !task.time,
-      resource: task,
-    } as Event & { resource: Task })
-  }, [outsideTaskId, taskMap, eventMap])
+  // Mobile week-view drag: move a task to a specific day column AND hour row.
+  const moveTaskToDayHour = (taskId: string, dayKey: string, hour: number) => {
+    const task = taskMap.get(taskId)
+    if (!task) return
+    const time = `${String(hour).padStart(2, '0')}:00`
+    if (task.dueDate === dayKey && task.time === time) return
+    updateTask(task.id, {
+      dueDate: dayKey,
+      time,
+      status: task.status === 'done' ? 'planned' : task.status,
+    })
+  }
+
+  // Mobile day-view drag: keep the day, change only the hour.
+  const moveTaskToHour = (taskId: string, hour: number) => {
+    const task = taskMap.get(taskId)
+    if (!task) return
+    const time = `${String(hour).padStart(2, '0')}:00`
+    if (task.time === time) return
+    updateTask(task.id, {
+      time,
+      status: task.status === 'done' ? 'planned' : task.status,
+    })
+  }
+
+  // Attach an EXISTING task to the slot the user tapped (from the picker).
+  const attachExistingTask = (taskId: string) => {
+    if (!slotDraft) return
+    const task = taskMap.get(taskId)
+    if (!task) { setSlotDraft(null); return }
+    const s = slotDraft
+    updateTask(task.id, {
+      dueDate: format(s.start, 'yyyy-MM-dd'),
+      time: s.view === Views.MONTH ? undefined : format(s.start, 'HH:mm'),
+      status: task.status === 'done' ? 'planned' : task.status,
+    })
+    setSlotDraft(null)
+    setUI({ selected: task.id, details: true })
+  }
+
+  // Open the New/Existing chooser for a tapped slot.
+  const openSlotChooser = (start: Date, end: Date, v: View) => {
+    setSlotStep('choose')
+    setSlotDraft({ start, end, view: v })
+  }
 
   // View choices in the order users naturally read them (Day → Week → Month →
   // Agenda). Mobile gets the SAME set as desktop — the previous build dropped
@@ -3449,8 +3724,8 @@ function CalendarPage() {
   const viewChoices = allViews
 
   return (
-    <div className='calendar-page p-4 sm:p-6 h-full flex flex-col xl:grid xl:grid-rows-1 xl:grid-cols-[minmax(0,1fr)_320px] gap-4'>
-      <div className='min-h-0 flex-1 flex flex-col gap-3 sm:gap-4 xl:flex-auto'>
+    <div className='calendar-page p-4 sm:p-6 h-full flex flex-col gap-4'>
+      <div className='min-h-0 flex-1 flex flex-col gap-3 sm:gap-4'>
         <div className='calendar-toolbar flex items-center gap-1.5 sm:gap-2 flex-wrap'>
           <button className='btn btn-secondary !h-9 !px-3 text-xs sm:text-sm' onClick={() => setDate(new Date())}>Today</button>
           <button className='btn btn-ghost !h-9 !px-2' onClick={() => setDate(addDays(date, view === Views.DAY ? -1 : view === Views.WEEK ? -7 : -30))} aria-label='Previous'><ChevronLeft className='h-4 w-4' /></button>
@@ -3479,17 +3754,6 @@ function CalendarPage() {
               ))}
             </div>
           )}
-          {/* Mobile: open the drag rail as a bottom sheet */}
-          {isMobile && (
-            <button
-              className='btn btn-secondary !h-9 !px-3 text-xs'
-              onClick={() => setMobileRailOpen(true)}
-              aria-label='Open task drawer'
-            >
-              <ListChecks className='h-4 w-4' />
-              Tasks
-            </button>
-          )}
         </div>
         <div className={cn('calendar-surface min-h-0 flex-1', isMobile && 'calendar-surface-mobile', isMobile && `cal-view-${view}`)}>
           {isMobile && view === Views.MONTH ? (
@@ -3500,7 +3764,32 @@ function CalendarPage() {
               events={events}
               onMoveTask={moveTaskToDay}
               onOpenTask={(id) => setUI({ selected: id, details: true })}
-              onSelectDay={(day) => setSlotDraft({ start: day, end: day, view: Views.MONTH })}
+              onSelectDay={(day) => openSlotChooser(day, day, Views.MONTH)}
+            />
+          ) : isMobile && view === Views.WEEK ? (
+            /* Mobile-only week time-grid with touch drag-and-drop between day
+               columns and hour rows (both directions). */
+            <MobileCalendarWeek
+              date={date}
+              events={events}
+              onMoveTask={moveTaskToDayHour}
+              onOpenTask={(id) => setUI({ selected: id, details: true })}
+              onSelectSlot={(day, hour) => {
+                const start = new Date(day.getFullYear(), day.getMonth(), day.getDate(), hour, 0)
+                openSlotChooser(start, new Date(start.getTime() + 60 * 60000), Views.WEEK)
+              }}
+            />
+          ) : isMobile && view === Views.DAY ? (
+            /* Mobile-only day time-grid with touch drag-and-drop between hour rows. */
+            <MobileCalendarDay
+              date={date}
+              events={events}
+              onMoveTask={moveTaskToHour}
+              onOpenTask={(id) => setUI({ selected: id, details: true })}
+              onSelectSlot={(hour) => {
+                const start = new Date(date.getFullYear(), date.getMonth(), date.getDate(), hour, 0)
+                openSlotChooser(start, new Date(start.getTime() + 60 * 60000), Views.DAY)
+              }}
             />
           ) : (
           <DragAndDropCalendar
@@ -3518,12 +3807,6 @@ function CalendarPage() {
             draggableAccessor={() => dndEnabled}
             resizableAccessor={() => dndEnabled}
             popup
-            dragFromOutsideItem={dndEnabled ? () => dragFromOutsideItem : undefined}
-            onDropFromOutside={dndEnabled ? ({ start, end, allDay }: any) => {
-              const task = outsideTaskId ? taskMap.get(outsideTaskId) : null
-              if (task) syncTaskToSlot(task, start, end, allDay)
-              setOutsideTaskId(null)
-            } : undefined}
             onEventDrop={dndEnabled ? ({ event, start, end, allDay }: any) => {
               const task = (event as Event & { resource: Task }).resource
               if (task) syncTaskToSlot(task, start, end, allDay)
@@ -3535,8 +3818,8 @@ function CalendarPage() {
             style={{ height: '100%' }}
             onSelectEvent={(e: Event & { resource: Task }) => setUI({ selected: e.resource.id, details: true })}
             onSelectSlot={(slot: { start: Date; end: Date; action?: string }) => {
-              // Open our themed NamePrompt modal instead of the native browser prompt.
-              setSlotDraft({ start: slot.start, end: slot.end, view })
+              // Open the New/Existing chooser popup for the tapped slot.
+              openSlotChooser(slot.start, slot.end, view)
             }}
             eventPropGetter={(e: Event & { resource: Task }) => {
               const task = e.resource as Task
@@ -3554,113 +3837,22 @@ function CalendarPage() {
           )}
         </div>
       </div>
-      {/* Desktop side rail (>= xl). On mobile this same content renders inside a
-          bottom-sheet drawer to keep the calendar full-width. */}
-      <div className='hidden xl:flex min-h-0 flex-col panel overflow-hidden'>
-        <div className='p-4 border-b'>
-          <div className='flex items-center gap-2 text-sm font-semibold'><ListChecks className='h-4 w-4' /> Drag tasks into the calendar</div>
-          <div className='mt-1 text-xs text-zinc-500'>Use this rail to drop any task onto any day or time slot. Scheduled tasks can also be dragged again to reschedule.</div>
-          <div className='search-field mt-3'>
-            <Search className='search-field-icon' />
-            <input value={outsideQuery} onChange={e => setOutsideQuery(e.target.value)} className='search-field-input' placeholder='Filter tasks…' aria-label='Filter tasks' />
-          </div>
-        </div>
-        <div className='min-h-0 flex-1 overflow-y-auto p-3 space-y-2 scrollbar-thin'>
-          {outsideTasks.length === 0 && <Empty title='No tasks to drag' desc='Create a task or clear the filter to populate this rail.' icon={CalendarDays} />}
-          {outsideTasks.map(task => {
-            const isActive = outsideTaskId === task.id
-            return (
-              <div
-                key={task.id}
-                draggable={dndEnabled}
-                onDragStart={dndEnabled ? (e) => { e.dataTransfer.setData('text/plain', task.id); e.dataTransfer.effectAllowed = 'move'; setOutsideTaskId(task.id) } : undefined}
-                onDragEnd={dndEnabled ? () => setOutsideTaskId(null) : undefined}
-                onClick={() => setUI({ selected: task.id, details: true })}
-                className={cn('panel p-3 hover:shadow-sm transition', dndEnabled && 'cursor-grab active:cursor-grabbing', isActive && 'ring-2 ring-indigo-500/30')}
-              >
-                <div className='flex items-start gap-2'>
-                  <div className='min-w-0 flex-1'>
-                    <div className='text-sm font-medium truncate'>{task.title}</div>
-                    <div className='mt-1 flex flex-wrap items-center gap-2 text-[11px] text-zinc-500'>
-                      {statusBadge(task.status)}
-                      {priorityBadge(task.priority, 'compact-meta compact-meta-priority')}
-                      {task.dueDate && <span className='inline-flex items-center gap-1'><CalendarDays className='h-3 w-3' />{format(parseISO(task.dueDate), 'MMM d')}{task.time && ` · ${task.time}`}</span>}
-                    </div>
-                  </div>
-                  {!!task.images?.length && <img src={task.images[0].url} alt={task.images[0].name || task.title} className='h-12 w-12 rounded-xl object-cover border border-black/5 dark:border-white/10 shrink-0' />}
-                </div>
-              </div>
-            )
-          })}
-        </div>
-      </div>
-
-      {/* Mobile drag-rail bottom sheet — only mounted on small screens. */}
-      {isMobile && (
-        <AnimatePresence>
-          {mobileRailOpen && (
-            <>
-              <motion.div className='popup-overlay' initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setMobileRailOpen(false)} />
-              <motion.div
-                className='cal-mobile-sheet panel'
-                initial={{ y: '100%' }}
-                animate={{ y: 0 }}
-                exit={{ y: '100%' }}
-                transition={{ type: 'spring', stiffness: 360, damping: 36 }}
-              >
-                <div className='cal-mobile-sheet-handle' />
-                <div className='p-4 border-b flex items-start gap-3'>
-                  <div className='flex-1'>
-                    <div className='flex items-center gap-2 text-sm font-semibold'><ListChecks className='h-4 w-4' /> Tasks</div>
-                    <div className='mt-1 text-xs text-zinc-500'>Tap a task to open it, or long-press &amp; drag onto a calendar slot.</div>
-                  </div>
-                  <button className='btn btn-ghost !h-8 !px-2' onClick={() => setMobileRailOpen(false)} aria-label='Close'>
-                    <X className='h-4 w-4' />
-                  </button>
-                </div>
-                <div className='p-3 border-b'>
-                  <div className='search-field'>
-                    <Search className='search-field-icon' />
-                    <input value={outsideQuery} onChange={e => setOutsideQuery(e.target.value)} className='search-field-input' placeholder='Filter tasks…' aria-label='Filter tasks' />
-                  </div>
-                </div>
-                <div className='min-h-0 flex-1 overflow-y-auto p-3 space-y-2 scrollbar-thin'>
-                  {outsideTasks.length === 0 && <Empty title='No tasks to drag' desc='Create a task or clear the filter to populate this list.' icon={CalendarDays} />}
-                  {outsideTasks.map(task => {
-                    const isActive = outsideTaskId === task.id
-                    return (
-                      <div
-                        key={task.id}
-                        draggable={dndEnabled}
-                        onDragStart={dndEnabled ? (e) => { e.dataTransfer.setData('text/plain', task.id); e.dataTransfer.effectAllowed = 'move'; setOutsideTaskId(task.id) } : undefined}
-                        onDragEnd={dndEnabled ? () => { setOutsideTaskId(null); setMobileRailOpen(false) } : undefined}
-                        onClick={() => { setUI({ selected: task.id, details: true }); setMobileRailOpen(false) }}
-                        className={cn('panel p-3 hover:shadow-sm transition', dndEnabled && 'cursor-grab active:cursor-grabbing', isActive && 'ring-2 ring-indigo-500/30')}
-                      >
-                        <div className='flex items-start gap-2'>
-                          <div className='min-w-0 flex-1'>
-                            <div className='text-sm font-medium truncate'>{task.title}</div>
-                            <div className='mt-1 flex flex-wrap items-center gap-2 text-[11px] text-zinc-500'>
-                              {statusBadge(task.status)}
-                              {priorityBadge(task.priority, 'compact-meta compact-meta-priority')}
-                              {task.dueDate && <span className='inline-flex items-center gap-1'><CalendarDays className='h-3 w-3' />{format(parseISO(task.dueDate), 'MMM d')}{task.time && ` · ${task.time}`}</span>}
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    )
-                  })}
-                </div>
-              </motion.div>
-            </>
-          )}
-        </AnimatePresence>
+      {/* Slot chooser: after tapping a calendar slot, pick New or Existing task. */}
+      {slotDraft && slotStep === 'choose' && (
+        <SlotChoicePrompt
+          slot={slotDraft}
+          onClose={() => setSlotDraft(null)}
+          onNew={() => setSlotStep('new')}
+          onExisting={() => setSlotStep('existing')}
+        />
       )}
-      {slotDraft && (
+
+      {/* New task: themed name prompt that schedules into the tapped slot. */}
+      {slotDraft && slotStep === 'new' && (
         <NamePrompt
           title='New task'
           initial=''
-          label={`Task title · ${format(slotDraft.start, 'MMM d, HH:mm')}`}
+          label={`Task title · ${format(slotDraft.start, slotDraft.view === Views.MONTH ? 'MMM d' : 'MMM d, HH:mm')}`}
           onClose={() => setSlotDraft(null)}
           onSave={(v) => {
             const s = slotDraft
@@ -3673,7 +3865,133 @@ function CalendarPage() {
           }}
         />
       )}
+
+      {/* Existing task: searchable, newest-first picker that schedules the pick. */}
+      {slotDraft && slotStep === 'existing' && (
+        <ExistingTaskPicker
+          slot={slotDraft}
+          tasks={tasks}
+          onClose={() => setSlotDraft(null)}
+          onBack={() => setSlotStep('choose')}
+          onPick={attachExistingTask}
+        />
+      )}
     </div>
+  )
+}
+
+/* ============================================================
+   Calendar slot flow — choose New vs Existing, then act.
+   Rendered when a calendar cell/slot is tapped.
+   ============================================================ */
+function SlotChoicePrompt({
+  slot, onClose, onNew, onExisting,
+}: {
+  slot: { start: Date; end: Date; view: View }
+  onClose: () => void
+  onNew: () => void
+  onExisting: () => void
+}) {
+  const when = slot.view === Views.MONTH
+    ? format(slot.start, 'EEEE, MMM d')
+    : format(slot.start, 'EEEE, MMM d · HH:mm')
+  return createPortal(
+    <>
+      <div className='popup-overlay' onClick={onClose} />
+      <div className='popup-shell panel p-0' style={{ maxWidth: 420 }}>
+        <div className='p-4 border-b'>
+          <div className='text-sm font-semibold'>Add to calendar</div>
+          <div className='mt-0.5 text-xs text-zinc-500'>{when}</div>
+        </div>
+        <div className='p-4 grid grid-cols-1 gap-2'>
+          <button className='slot-choice' onClick={onNew}>
+            <span className='slot-choice-icon'><Plus className='h-4 w-4' /></span>
+            <span className='min-w-0'>
+              <span className='slot-choice-title'>New Task</span>
+              <span className='slot-choice-desc'>Create a brand-new task on this slot.</span>
+            </span>
+          </button>
+          <button className='slot-choice' onClick={onExisting}>
+            <span className='slot-choice-icon'><ListChecks className='h-4 w-4' /></span>
+            <span className='min-w-0'>
+              <span className='slot-choice-title'>Existing Task</span>
+              <span className='slot-choice-desc'>Attach one of your existing tasks here.</span>
+            </span>
+          </button>
+        </div>
+        <div className='flex items-center justify-end gap-2 px-4 py-3 border-t bg-zinc-50 dark:bg-zinc-900'>
+          <button className='btn btn-secondary' onClick={onClose}>Cancel</button>
+        </div>
+      </div>
+    </>,
+    document.body,
+  )
+}
+
+function ExistingTaskPicker({
+  slot, tasks, onClose, onBack, onPick,
+}: {
+  slot: { start: Date; end: Date; view: View }
+  tasks: Task[]
+  onClose: () => void
+  onBack: () => void
+  onPick: (taskId: string) => void
+}) {
+  const [query, setQuery] = useState('')
+  // Newest first: sort by createdAt descending (fall back to id order).
+  const results = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    return tasks
+      .filter(t => !t.archived)
+      .filter(t => !q || t.title.toLowerCase().includes(q) || (t.description || '').toLowerCase().includes(q))
+      .sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''))
+  }, [tasks, query])
+  const when = slot.view === Views.MONTH
+    ? format(slot.start, 'MMM d')
+    : format(slot.start, 'MMM d · HH:mm')
+  return createPortal(
+    <>
+      <div className='popup-overlay' onClick={onClose} />
+      <div className='popup-shell panel p-0 flex flex-col' style={{ maxWidth: 460, maxHeight: '80vh' }}>
+        <div className='p-4 border-b flex items-center gap-2'>
+          <button className='btn btn-ghost !h-8 !px-2' onClick={onBack} aria-label='Back'>
+            <ChevronLeft className='h-4 w-4' />
+          </button>
+          <div className='flex-1 min-w-0'>
+            <div className='text-sm font-semibold'>Select existing task</div>
+            <div className='mt-0.5 text-xs text-zinc-500'>Schedule to {when}</div>
+          </div>
+          <button className='btn btn-ghost !h-8 !px-2' onClick={onClose} aria-label='Close'>
+            <X className='h-4 w-4' />
+          </button>
+        </div>
+        <div className='p-3 border-b'>
+          <div className='search-field'>
+            <Search className='search-field-icon' />
+            <input autoFocus value={query} onChange={e => setQuery(e.target.value)} className='search-field-input' placeholder='Search tasks…' aria-label='Search tasks' />
+          </div>
+        </div>
+        <div className='min-h-0 flex-1 overflow-y-auto p-3 space-y-2 scrollbar-thin'>
+          {results.length === 0 && <Empty title='No tasks found' desc='Try a different search, or create a new task.' icon={ListChecks} />}
+          {results.map(task => (
+            <button
+              key={task.id}
+              type='button'
+              onClick={() => onPick(task.id)}
+              className='panel p-3 w-full text-left hover:shadow-sm transition hover:ring-2 hover:ring-indigo-500/30'
+            >
+              <div className='text-sm font-medium truncate'>{task.title}</div>
+              <div className='mt-1 flex flex-wrap items-center gap-2 text-[11px] text-zinc-500'>
+                {statusBadge(task.status)}
+                {priorityBadge(task.priority, 'compact-meta compact-meta-priority')}
+                {task.dueDate && <span className='inline-flex items-center gap-1'><CalendarDays className='h-3 w-3' />{format(parseISO(task.dueDate), 'MMM d')}{task.time && ` · ${task.time}`}</span>}
+              </div>
+            </button>
+          ))}
+        </div>
+      </div>
+    </>,
+    document.body,
   )
 }
 
