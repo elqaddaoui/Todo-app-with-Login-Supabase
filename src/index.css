@@ -1,0 +1,2495 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ============================================================
+   LIGHT MODE — UNCHANGED
+   ============================================================ */
+:root{
+  --background:0 0% 100%;
+  --foreground:222 22% 10%;
+  --card:0 0% 100%;
+  --card-foreground:222 22% 10%;
+  --primary:222 47% 11%;
+  --primary-foreground:0 0% 100%;
+  --secondary:220 15% 96%;
+  --secondary-foreground:222 22% 10%;
+  --muted:220 14% 96%;
+  --muted-foreground:220 8% 46%;
+  --accent:220 14% 96%;
+  --accent-foreground:222 22% 10%;
+  --destructive:0 72% 51%;
+  --destructive-foreground:0 0% 100%;
+  --border:220 13% 91%;
+  --input:220 13% 91%;
+  --ring:222 47% 11%;
+  --selected-bg:238 100% 98%;
+  --selected-border:238 84% 67%;
+
+  /* Layered dark surfaces — unused in light mode but kept consistent */
+  --surface-1: 0 0% 100%;
+  --surface-2: 220 15% 98%;
+  --surface-3: 220 15% 96%;
+  --surface-hover: 220 14% 94%;
+  --surface-selected: 238 100% 97%;
+  --text-primary: 222 22% 10%;
+  --text-secondary: 222 14% 28%;
+  --text-muted: 220 8% 46%;
+  --border-soft: 220 13% 91%;
+  --border-strong: 220 13% 85%;
+  --divider: 220 13% 93%;
+  --focus: 222 47% 50%;
+
+  --shadow-sm: 0 1px 2px rgba(15,23,42,.06);
+  --shadow-md: 0 6px 18px rgba(15,23,42,.08);
+  --shadow-lg: 0 14px 32px rgba(15,23,42,.10);
+  --shadow-elev: 0 1px 0 rgba(15,23,42,.04), 0 1px 2px rgba(15,23,42,.06);
+}
+
+/* ============================================================
+   DARK MODE — PREMIUM, DESIGNED-FIRST DARK SYSTEM
+   Inspired by Linear, Notion Calendar, Arc, Raycast, Vercel
+   ============================================================ */
+.dark{
+  /* Core scaffolding — translated to HSL for tailwind's hsl(var(...)) consumption */
+  /* #111317 ≈ 220 13% 8%   – App background          */
+  /* #171A20 ≈ 220 13% 11%  – Main panels             */
+  /* #1D2128 ≈ 222 14% 14%  – Cards                   */
+  /* #232832 ≈ 222 14% 17%  – Elevated cards          */
+  /* #2B313C ≈ 220 14% 20%  – Hover                   */
+  /* #303848 ≈ 222 18% 24%  – Selected                */
+
+  --background: 220 13% 8%;
+  --foreground: 220 20% 96%;
+  --card: 222 14% 11%;
+  --card-foreground: 220 20% 96%;
+  --primary: 220 20% 95%;
+  --primary-foreground: 222 18% 10%;
+  --secondary: 222 14% 14%;
+  --secondary-foreground: 220 14% 92%;
+  --muted: 222 14% 12%;
+  --muted-foreground: 220 12% 64%;
+  --accent: 222 14% 17%;
+  --accent-foreground: 220 14% 92%;
+  --destructive: 0 62% 50%;
+  --destructive-foreground: 0 0% 100%;
+  --border: 222 14% 16%;
+  --input: 222 14% 18%;
+  --ring: 218 100% 66%;
+  --selected-bg: 222 18% 18%;
+  --selected-border: 218 100% 66%;
+
+  /* Layered surface system — never use pure black */
+  --surface-1: 220 13% 8%;     /* app background       */
+  --surface-2: 220 13% 11%;    /* main panels          */
+  --surface-3: 222 14% 14%;    /* cards                */
+  --surface-4: 222 14% 17%;    /* elevated cards       */
+  --surface-hover: 220 14% 20%;
+  --surface-selected: 222 18% 22%;
+
+  /* Text hierarchy — premium readability, WCAG AA */
+  --text-primary: 220 20% 96%;   /* #F5F7FA */
+  --text-secondary: 220 18% 81%; /* #C3CBD5 */
+  --text-muted: 220 14% 63%;     /* #8B95A5 */
+
+  /* Borders & dividers — never pure white, never strong */
+  --border-soft: 0 0% 100%;      /* used with /6 opacity */
+  --border-strong: 0 0% 100%;    /* used with /10 opacity */
+  --divider: 0 0% 100%;          /* used with /4 opacity */
+  --focus: 218 100% 66%;         /* #4F8CFF */
+
+  /* Layered shadows — gentle, never heavy */
+  --shadow-sm: 0 1px 2px rgba(0,0,0,.25);
+  --shadow-md: 0 6px 18px rgba(0,0,0,.30);
+  --shadow-lg: 0 14px 32px rgba(0,0,0,.35);
+  --shadow-elev: 0 1px 0 rgba(255,255,255,.03), 0 1px 2px rgba(0,0,0,.30);
+
+  color-scheme: dark;
+}
+
+@layer base{
+  *{border-color:hsl(var(--border))}
+  html,body,#root{@apply h-full}
+  body{
+    @apply bg-[hsl(var(--background))] text-[hsl(var(--foreground))] antialiased;
+    font-family:Inter,system-ui,sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
+  .dark body{
+    background:
+      radial-gradient(ellipse 1200px 600px at 50% -200px, rgba(79,140,255,.04), transparent 60%),
+      hsl(var(--background));
+  }
+  button{@apply outline-none}
+  input,textarea,select{@apply outline-none}
+  ::selection{ background: hsl(var(--focus) / .35); color: hsl(var(--text-primary)); }
+}
+
+/* ============================================================
+   SCROLLBARS — subtle in dark, never distracting
+   ============================================================ */
+.scrollbar-thin{scrollbar-width:thin}
+.scrollbar-thin::-webkit-scrollbar{width:8px;height:8px}
+.scrollbar-thin::-webkit-scrollbar-thumb{background:rgba(120,120,120,.25);border-radius:9999px}
+.scrollbar-thin::-webkit-scrollbar-thumb:hover{background:rgba(140,140,140,.35)}
+.dark .scrollbar-thin::-webkit-scrollbar-thumb{background:rgba(255,255,255,.08)}
+.dark .scrollbar-thin::-webkit-scrollbar-thumb:hover{background:rgba(255,255,255,.14)}
+
+/* ============================================================
+   CORE COMPONENT PRIMITIVES
+   ============================================================ */
+.panel{
+  @apply rounded-2xl border bg-[hsl(var(--card))] text-[hsl(var(--card-foreground))];
+  border-color: hsl(var(--border));
+  transition: background .2s ease, border-color .2s ease, box-shadow .2s ease;
+}
+.dark .panel{
+  background: hsl(var(--surface-3));
+  border-color: rgba(255,255,255,.06);
+  box-shadow: var(--shadow-elev);
+}
+
+.soft{@apply bg-[hsl(var(--muted))]}
+
+.btn{
+  @apply inline-flex items-center gap-2 rounded-xl px-3 py-2 text-sm font-medium;
+  transition: background .18s ease, color .18s ease, border-color .18s ease,
+              box-shadow .18s ease, transform .15s ease, opacity .15s ease;
+  position: relative;
+}
+.btn:active{ transform: translateY(0.5px) }
+.btn:focus-visible{
+  outline: none;
+  box-shadow: 0 0 0 2px hsl(var(--background)), 0 0 0 4px hsl(var(--focus) / .55);
+}
+
+.btn-primary{
+  @apply bg-[hsl(var(--primary))] text-[hsl(var(--primary-foreground))];
+}
+.btn-primary:hover{ opacity:.92; transform: translateY(-0.5px); }
+
+.dark .btn-primary{
+  background: linear-gradient(180deg, hsl(218 100% 70%), hsl(218 95% 60%));
+  color: #fff;
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,.18),
+    0 1px 2px rgba(0,0,0,.40);
+}
+.dark .btn-primary:hover{
+  filter: brightness(1.06);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,.22),
+    0 6px 18px rgba(79,140,255,.28);
+  opacity: 1;
+}
+
+.btn-secondary{
+  @apply bg-[hsl(var(--secondary))];
+}
+.btn-secondary:hover{ background: hsl(var(--accent)); }
+.dark .btn-secondary{
+  background: hsl(var(--surface-3));
+  color: hsl(var(--text-primary));
+  border: 1px solid rgba(255,255,255,.05);
+}
+.dark .btn-secondary:hover{
+  background: hsl(var(--surface-hover));
+  border-color: rgba(255,255,255,.08);
+}
+
+.btn-ghost{
+  background: transparent;
+  color: hsl(var(--text-secondary));
+}
+.btn-ghost:hover{ background: hsl(var(--accent)); color: hsl(var(--text-primary)); }
+.dark .btn-ghost{ color: hsl(var(--text-secondary)); }
+.dark .btn-ghost:hover{
+  background: hsl(var(--surface-hover));
+  color: hsl(var(--text-primary));
+}
+
+.input{
+  @apply h-10 w-full rounded-xl border bg-transparent px-3 text-sm;
+  border-color: hsl(var(--input));
+  transition: border-color .18s ease, box-shadow .18s ease, background .18s ease;
+}
+.input:focus{
+  border-color: hsl(var(--focus) / .8);
+  box-shadow: 0 0 0 3px hsl(var(--focus) / .18);
+}
+.dark .input{
+  background: hsl(var(--surface-3));
+  border-color: rgba(255,255,255,.06);
+  color: hsl(var(--text-primary));
+  box-shadow: inset 0 1px 0 rgba(0,0,0,.20);
+}
+.dark .input::placeholder{ color: hsl(var(--text-muted)); }
+.dark .input:focus{
+  background: hsl(var(--surface-4));
+  border-color: hsl(var(--focus) / .65);
+  box-shadow:
+    inset 0 1px 0 rgba(0,0,0,.20),
+    0 0 0 3px hsl(var(--focus) / .22);
+}
+
+/* ============================================================
+   BADGES
+   ============================================================ */
+.badge{
+  @apply inline-flex items-center rounded-lg text-[11px] font-medium;
+  padding: 4px 10px;
+  gap: 6px;
+  transition: background .15s ease;
+}
+.dark .badge.bg-black\/5{ background: rgba(255,255,255,.05) !important; }
+.dark .badge.bg-white\/5{ background: rgba(255,255,255,.05) !important; }
+
+/* ============================================================
+   SIDEBAR — project items + nav items, premium dark depth
+   ============================================================ */
+.project-item{
+  @apply relative flex items-center gap-2 rounded-xl px-3 py-2 text-sm;
+  transition: background .18s ease, transform .15s ease, box-shadow .2s ease, color .15s ease;
+  color: hsl(var(--text-secondary));
+}
+.project-item .project-dot{
+  @apply h-2 w-2 rounded-full shrink-0;
+  box-shadow: 0 0 0 3px hsl(var(--card));
+}
+.project-item:hover{
+  background: hsl(var(--accent));
+  transform: translateX(2px);
+  color: hsl(var(--text-primary));
+}
+.dark .project-item:hover{
+  background: hsl(var(--surface-hover));
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,.04);
+}
+.project-item.is-active{
+  background: hsl(var(--accent));
+  font-weight: 600;
+  color: hsl(var(--text-primary));
+  box-shadow: inset 2px 0 0 0 var(--project-color, hsl(var(--ring)));
+}
+.dark .project-item.is-active{
+  background: hsl(var(--surface-selected));
+  box-shadow:
+    inset 2px 0 0 0 var(--project-color, hsl(var(--focus))),
+    inset 0 0 0 1px rgba(255,255,255,.04),
+    0 1px 2px rgba(0,0,0,.20);
+}
+.project-item.is-active .project-icon{ transform: scale(1.05); }
+
+.nav-item{
+  @apply flex items-center gap-3 rounded-xl px-3 py-2 text-sm;
+  transition: background .18s ease, color .15s ease, box-shadow .2s ease;
+  color: hsl(var(--text-secondary));
+}
+.nav-item:hover{
+  background: hsl(var(--accent) / .6);
+  color: hsl(var(--text-primary));
+}
+.dark .nav-item:hover{
+  background: hsl(var(--surface-hover) / .8);
+  color: hsl(var(--text-primary));
+}
+.nav-item.is-active{
+  background: hsl(var(--accent));
+  font-weight: 500;
+  color: hsl(var(--text-primary));
+}
+.dark .nav-item.is-active{
+  background: hsl(var(--surface-selected));
+  color: hsl(var(--text-primary));
+  box-shadow:
+    inset 2px 0 0 0 hsl(var(--focus)),
+    inset 0 0 0 1px rgba(255,255,255,.04),
+    0 1px 2px rgba(0,0,0,.18);
+}
+
+/* ============================================================
+   TASK ROW — selected state (Linear-style)
+   ============================================================ */
+.task-row{
+  @apply relative;
+  transition: background .18s ease, border-color .18s ease,
+              box-shadow .2s ease, transform .15s ease;
+}
+.task-row:hover{
+  background: hsl(var(--accent) / .35);
+  transform: translateY(-0.5px);
+}
+.dark .task-row:hover{
+  background: hsl(var(--surface-4));
+  border-color: rgba(255,255,255,.08);
+  box-shadow: var(--shadow-sm);
+}
+.task-row.is-selected{
+  background: hsl(var(--selected-bg));
+  border-color: hsl(var(--selected-border) / .5);
+  box-shadow:
+    0 0 0 1px hsl(var(--selected-border) / .35),
+    0 0 24px -6px hsl(var(--selected-border) / .35),
+    inset 3px 0 0 0 hsl(var(--selected-border));
+}
+.dark .task-row.is-selected{
+  background: hsl(var(--surface-selected));
+  border-color: hsl(var(--focus) / .35);
+  box-shadow:
+    0 0 0 1px hsl(var(--focus) / .35),
+    0 0 28px -6px hsl(var(--focus) / .25),
+    inset 3px 0 0 0 hsl(var(--focus));
+}
+.task-row.is-selected::before{
+  content:'';
+  position:absolute;
+  inset:0;
+  border-radius: inherit;
+  pointer-events:none;
+  background: linear-gradient(135deg, hsl(var(--selected-border) / .04), transparent 60%);
+}
+
+/* ============================================================
+   TOPBAR — transparent + backdrop blur
+   ============================================================ */
+.topbar{
+  @apply h-12 px-3 flex items-center gap-2;
+  border-bottom: 1px solid hsl(var(--border));
+  background: hsl(var(--background) / .8);
+  backdrop-filter: blur(12px) saturate(140%);
+  -webkit-backdrop-filter: blur(12px) saturate(140%);
+}
+.dark .topbar{
+  background: hsl(var(--surface-1) / .72);
+  border-bottom-color: rgba(255,255,255,.05);
+}
+
+/* ============================================================
+   EMPTY STATES
+   ============================================================ */
+.empty-state{
+  @apply panel p-10 text-center flex flex-col items-center;
+}
+.empty-illustration{
+  position: relative;
+  width: 88px;
+  height: 88px;
+  margin-bottom: 14px;
+  border-radius: 24px;
+  background:
+    radial-gradient(circle at 30% 30%, hsl(var(--selected-border) / .18), transparent 60%),
+    radial-gradient(circle at 70% 70%, hsl(var(--selected-border) / .10), transparent 60%),
+    hsl(var(--muted));
+  display:flex;
+  align-items:center;
+  justify-content:center;
+}
+.empty-illustration svg{ width: 36px; height: 36px; color: hsl(var(--selected-border)); }
+.empty-illustration::after{
+  content:'';
+  position:absolute;
+  inset:-6px;
+  border-radius: 28px;
+  border: 1px dashed hsl(var(--border));
+  opacity: .8;
+}
+.dark .empty-illustration{
+  background:
+    radial-gradient(circle at 30% 30%, hsl(var(--focus) / .22), transparent 60%),
+    radial-gradient(circle at 70% 70%, hsl(var(--focus) / .12), transparent 60%),
+    hsl(var(--surface-4));
+}
+.dark .empty-illustration svg{ color: hsl(var(--focus)); }
+.dark .empty-illustration::after{ border-color: rgba(255,255,255,.08); }
+
+.kanban-empty{
+  border: 2px dashed hsl(var(--border));
+  border-radius: 16px;
+  padding: 24px 16px;
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+  text-align: center;
+  transition: background .18s, border-color .18s;
+}
+.kanban-empty:hover{
+  border-color: hsl(var(--selected-border) / .6);
+  background: hsl(var(--selected-border) / .04);
+}
+
+/* ============================================================
+   COMPACT (TABLE) MODE — minimum rendered layout
+   Activated by adding .compact-mode to <html> via Settings.
+   Renders TaskRow / KanbanTaskCard as slim table-style rows.
+   ============================================================ */
+.compact-mode .task-row,
+.compact-mode .compact-card{
+  padding: 6px 10px !important;
+  border-radius: 10px !important;
+  font-size: 13px;
+}
+.compact-mode .task-row .compact-hide,
+.compact-mode .compact-card .compact-hide{ display:none !important; }
+.compact-mode .task-row .compact-row-meta,
+.compact-mode .compact-card .compact-row-meta{
+  margin-top: 4px !important;
+  gap: 6px 10px;
+  font-size: 11px;
+  align-items: center;
+}
+.compact-mode .task-row .compact-row-meta > *,
+.compact-mode .compact-card .compact-row-meta > *{
+  white-space: nowrap;
+  max-width: 100%;
+}
+.compact-mode .task-row{
+  display: flex !important;
+  align-items: center;
+}
+.compact-mode .panel.compact-card{
+  border-radius: 10px !important;
+}
+.compact-mode .task-list-stack{ gap: 4px !important; }
+.compact-mode .subtask-children{ padding-left: 22px; border-left: 1px dashed hsl(var(--border)); margin-left: 11px; gap: 4px; }
+.compact-mode .task-row .badge,
+.compact-mode .compact-card .badge{ padding: 3px 8px; }
+
+@media (max-width: 640px){
+  .compact-mode .task-row,
+  .compact-mode .compact-card{
+    padding: 6px 8px !important;
+    border-radius: 8px !important;
+  }
+  .compact-mode .task-row .task-row-menu,
+  .compact-mode .task-row .task-favorite-toggle,
+  .compact-mode .compact-card .task-favorite-toggle,
+  .compact-mode .task-row .compact-meta-estimate,
+  .compact-mode .task-row .compact-meta-project,
+  .compact-mode .task-row .compact-meta-tag,
+  .compact-mode .compact-card .compact-meta-tag{
+    display: none !important;
+  }
+  .compact-mode .task-row .compact-row-meta,
+  .compact-mode .compact-card .compact-row-meta{
+    margin-top: 3px !important;
+    gap: 6px;
+    font-size: 10px;
+    flex-wrap: wrap;
+    overflow: visible;
+  }
+  .compact-mode .task-row .compact-row-meta > *,
+  .compact-mode .compact-card .compact-row-meta > *{
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .compact-mode .weekly-progress svg{ height: 136px; }
+}
+
+/* Subtask indentation (always-on) */
+.subtask-children{
+  margin-top: 6px;
+  padding-left: 28px;
+  border-left: 1px dashed hsl(var(--border));
+  margin-left: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.subtask-toggle{
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px; border-radius: 6px;
+  color: hsl(var(--muted-foreground));
+  transition: background .15s, color .15s;
+}
+.subtask-toggle:hover{ background: hsl(var(--accent)); color: hsl(var(--foreground)); }
+.subtask-toggle svg{ transition: transform .22s cubic-bezier(.4,0,.2,1); }
+.subtask-toggle.is-open svg{ transform: rotate(90deg); }
+
+/* Smooth collapse container for the subtask tree. The outer motion.div
+   animates grid-template-rows 0fr ↔ 1fr, letting the inner block expand /
+   collapse to its natural auto height without measuring. This replaces the
+   old framer-motion `layout` pop that made cards look bad on toggle. */
+.subtask-children-anim{
+  will-change: grid-template-rows, opacity;
+}
+.subtask-add-inline{
+  display:flex; align-items:center; gap:8px;
+  font-size: 12px;
+  color: hsl(var(--muted-foreground));
+  padding: 4px 8px;
+  border-radius: 8px;
+  border: 1px dashed hsl(var(--border));
+  background: transparent;
+  transition: border-color .15s, color .15s, background .15s;
+}
+.subtask-add-inline:hover{
+  color: hsl(var(--foreground));
+  border-color: hsl(var(--selected-border) / .5);
+  background: hsl(var(--selected-border) / .04);
+}
+
+/* ============================================================
+   WEEKLY PROGRESS — new creative SVG-driven chart
+   ============================================================ */
+.weekly-progress{
+  position: relative;
+  width: 100%;
+  border-radius: 14px;
+  padding: 8px 4px 0;
+  background:
+    radial-gradient(120% 80% at 50% 0%, hsl(var(--selected-border) / .07), transparent 60%);
+}
+.weekly-progress svg{ width: 100%; height: 160px; display:block; overflow: visible; }
+.wp-grid line{ stroke: hsl(var(--border)); stroke-dasharray: 3 4; opacity: .55; }
+.wp-area{ fill: url(#wpAreaGradient); opacity: .85; }
+.wp-line{ fill: none; stroke: hsl(var(--selected-border)); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; filter: drop-shadow(0 4px 10px hsl(var(--selected-border) / .35)); }
+.wp-bar{ fill: hsl(var(--selected-border) / .14); rx: 6; transition: fill .15s; }
+.wp-bar.is-today{ fill: hsl(var(--selected-border) / .25); }
+.wp-bar:hover{ fill: hsl(var(--selected-border) / .28); }
+.wp-point{ fill: hsl(var(--background)); stroke: hsl(var(--selected-border)); stroke-width: 2; transition: r .15s; }
+.wp-point.is-today{ fill: hsl(var(--selected-border)); }
+.wp-label{ font-size: 10px; fill: hsl(var(--muted-foreground)); }
+.wp-label.is-today{ fill: hsl(var(--selected-border)); font-weight: 600; }
+.wp-value{ font-size: 10px; font-weight: 600; fill: hsl(var(--foreground)); }
+.weekly-progress-summary{
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; padding: 10px 8px 0; font-size: 11px; color: hsl(var(--muted-foreground));
+}
+.weekly-progress-summary .wp-total{
+  display:inline-flex; align-items:baseline; gap: 4px;
+  color: hsl(var(--foreground));
+}
+.weekly-progress-summary .wp-total b{ font-size: 18px; font-weight: 700; letter-spacing: -0.01em; }
+.weekly-progress-summary .wp-pill{
+  display:inline-flex; align-items:center; gap: 6px;
+  padding: 3px 8px; border-radius: 999px;
+  background: hsl(var(--selected-border) / .12);
+  color: hsl(var(--selected-border));
+  font-weight: 600;
+}
+.dark .wp-grid line{ stroke: rgba(255,255,255,.08); }
+.dark .wp-point{ fill: hsl(var(--surface-2)); }
+
+.dark .kanban-empty{ border-color: rgba(255,255,255,.08); }
+.dark .kanban-empty:hover{
+  border-color: hsl(var(--focus) / .45);
+  background: hsl(var(--focus) / .06);
+}
+
+/* ============================================================
+   SIDEBAR SEARCH — premium button styled to match the unified
+   `.search-field` visual language (same height, same border, same
+   focus / hover behavior). Uses the SAME icon size, spacing, and
+   keyboard-hint badge as `.search-field` so the whole app speaks one
+   design language for search.
+   ============================================================ */
+.sidebar-search{
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 12px 12px 0 12px;
+  width: calc(100% - 24px);
+  min-width: 0;
+  height: 38px;
+  padding: 0 10px 0 12px;
+  border-radius: 12px;
+  border: 1px solid hsl(var(--input));
+  background: transparent;
+  color: hsl(var(--text-muted));
+  font-size: 13px;
+  line-height: 1;
+  text-align: left;
+  transition: background .18s ease, border-color .18s ease, box-shadow .18s ease, color .18s ease;
+}
+.sidebar-search > svg{
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  color: hsl(var(--text-muted));
+}
+.sidebar-search:hover{
+  background: hsl(var(--accent) / .5);
+  color: hsl(var(--text-secondary));
+}
+.sidebar-search:focus-visible{
+  outline: none;
+  border-color: hsl(var(--focus) / .8);
+  box-shadow: 0 0 0 3px hsl(var(--focus) / .18);
+}
+.dark .sidebar-search{
+  background: hsl(var(--surface-3));
+  border-color: rgba(255,255,255,.06);
+  box-shadow: inset 0 1px 0 rgba(0,0,0,.20);
+}
+.dark .sidebar-search:hover{
+  background: hsl(var(--surface-4));
+  border-color: rgba(255,255,255,.10);
+}
+.sidebar-search .sidebar-search-label{
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  text-align: left;
+  font-size: 13px;
+}
+.sidebar-search .sidebar-search-kbd{
+  flex: 0 0 auto;
+  font-size: 10px;
+  line-height: 1;
+  border-radius: 6px;
+  padding: 3px 6px;
+  background: hsl(var(--muted));
+  color: hsl(var(--text-muted));
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+.dark .sidebar-search .sidebar-search-kbd{
+  background: rgba(255,255,255,.06);
+  color: hsl(var(--text-secondary));
+}
+
+/* ============================================================
+   COMMAND PALETTE / POPUP
+
+   Centering strategy on desktop:
+   - `--app-sidebar-w` is written to :root from App.tsx whenever the sidebar
+     is toggled or resized (defaults to 0 when the sidebar is closed / on
+     mobile). It represents the width of the fixed left sidebar area.
+   - The popup uses `left: var(--app-sidebar-w); right: 0` + `margin: auto`,
+     which perfectly centers it inside the VISIBLE content area (to the
+     right of the sidebar) instead of the entire viewport.
+   - We use auto margins for centering (NOT `transform: translateX(-50%)`)
+     so framer-motion's animated inline `transform` never fights our CSS.
+   ============================================================ */
+:root{ --app-sidebar-w: 0px; }
+
+.popup-overlay{
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,.32);
+  z-index: 40;
+  backdrop-filter: blur(2px);
+}
+.dark .popup-overlay{ background: rgba(0,0,0,.55); }
+
+.popup-shell{
+  position: fixed;
+  z-index: 50;
+  left: 12px;
+  right: 12px;
+  top: max(16px, env(safe-area-inset-top));
+  max-width: calc(100vw - 24px);
+  max-height: calc(100dvh - 32px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.dark .popup-shell{
+  box-shadow: var(--shadow-lg), 0 0 0 1px rgba(255,255,255,.05);
+}
+@media (min-width: 640px){
+  /* Center horizontally inside the content area (right of the sidebar).
+     `left: var(--app-sidebar-w)` + `right: 0` + fixed width + margin auto
+     mathematically centers the popup between the sidebar's right edge and
+     the viewport's right edge. */
+  .popup-shell{
+    left: var(--app-sidebar-w, 0px);
+    right: 0;
+    margin-left: auto;
+    margin-right: auto;
+    top: 96px;
+    width: min(680px, calc(100vw - var(--app-sidebar-w, 0px) - 32px));
+    max-width: min(680px, calc(100vw - var(--app-sidebar-w, 0px) - 32px));
+    max-height: calc(100vh - 128px);
+  }
+}
+.popup-shell-quick{}
+@media (min-width: 640px){
+  .popup-shell-quick{
+    width: min(620px, calc(100vw - var(--app-sidebar-w, 0px) - 32px));
+    max-width: min(620px, calc(100vw - var(--app-sidebar-w, 0px) - 32px));
+  }
+}
+
+/* ============================================================
+   UNIFIED SEARCH FIELD — one consistent visual language for every search
+   input in the app. Same height, radius, icon size, icon offset, hover /
+   focus behavior, and keyboard-hint alignment across:
+     • All Tasks header search
+     • Calendar rail (desktop + mobile) filter
+     • Command palette search input (in-popup variant)
+     • Sidebar quick-search button (matches `.sidebar-search` above)
+
+   Tokens (kept local so they never accidentally leak into other components):
+     --sf-h        — total field height
+     --sf-radius   — border radius
+     --sf-icon     — icon (search glyph) box size
+     --sf-pad-x    — horizontal padding between edge and icon / content
+     --sf-gap      — gap between the icon and the input text
+   ============================================================ */
+.search-field{
+  --sf-h: 38px;
+  --sf-radius: 12px;
+  --sf-icon: 16px;
+  --sf-pad-x: 12px;
+  --sf-gap: 10px;
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  width: 100%;
+  min-width: 0;
+  isolation: isolate;
+}
+.search-field .search-field-icon{
+  position: absolute;
+  left: var(--sf-pad-x);
+  top: 50%;
+  width: var(--sf-icon);
+  height: var(--sf-icon);
+  /* translate-y for exact vertical centering that survives any line-height */
+  transform: translateY(-50%);
+  color: hsl(var(--text-muted));
+  pointer-events: none;
+  display: block;
+  z-index: 1;
+}
+.search-field .search-field-input{
+  width: 100%;
+  min-width: 0;
+  height: var(--sf-h);
+  /* Left padding = pad-x + icon + gap so the caret aligns with visual text */
+  padding: 0 var(--sf-pad-x) 0 calc(var(--sf-pad-x) + var(--sf-icon) + var(--sf-gap));
+  border-radius: var(--sf-radius);
+  border: 1px solid hsl(var(--input));
+  background: transparent;
+  color: hsl(var(--text-primary));
+  font-size: 13px;
+  line-height: 1;
+  transition: border-color .18s ease, box-shadow .18s ease, background .18s ease;
+  /* Kill Safari's default inner shadow / rounded look. */
+  -webkit-appearance: none;
+  appearance: none;
+}
+.search-field .search-field-input::placeholder{
+  color: hsl(var(--text-muted));
+  font-size: 13px;
+}
+.search-field .search-field-input:hover{
+  border-color: hsl(var(--input) / .9);
+}
+.search-field .search-field-input:focus{
+  outline: none;
+  border-color: hsl(var(--focus) / .8);
+  box-shadow: 0 0 0 3px hsl(var(--focus) / .18);
+}
+.dark .search-field .search-field-input{
+  background: hsl(var(--surface-3));
+  border-color: rgba(255,255,255,.06);
+  box-shadow: inset 0 1px 0 rgba(0,0,0,.20);
+}
+.dark .search-field .search-field-input:hover{
+  background: hsl(var(--surface-4));
+}
+.dark .search-field .search-field-input:focus{
+  background: hsl(var(--surface-4));
+  border-color: hsl(var(--focus) / .65);
+  box-shadow:
+    inset 0 1px 0 rgba(0,0,0,.20),
+    0 0 0 3px hsl(var(--focus) / .22);
+}
+/* Focus visually pushes the icon to the accent color so users get a clear
+   "this input is active" cue on both light and dark themes. */
+.search-field:focus-within .search-field-icon{
+  color: hsl(var(--focus));
+}
+.search-field .search-field-kbd{
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 10px;
+  line-height: 1;
+  border-radius: 6px;
+  padding: 3px 6px;
+  background: hsl(var(--muted));
+  color: hsl(var(--text-muted));
+  pointer-events: none;
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  z-index: 1;
+}
+.dark .search-field .search-field-kbd{
+  background: rgba(255,255,255,.06);
+  color: hsl(var(--text-secondary));
+}
+/* When a kbd hint is present, reserve space on the right so long queries
+   don't collide with it. */
+.search-field:has(.search-field-kbd) .search-field-input{
+  padding-right: calc(var(--sf-pad-x) + 34px);
+}
+
+/* Compact size variant used by the All-Tasks header strip */
+.search-field.search-field-sm{
+  --sf-h: 36px;
+  --sf-pad-x: 10px;
+  --sf-gap: 8px;
+}
+.search-field.search-field-sm .search-field-input{ font-size: 13px; }
+
+/* Command-palette input takes the full width of the popup header row.
+   Larger height, no border, and slightly bigger padding to feel like the
+   familiar "macOS Spotlight / VS Code Command K" search input. */
+.search-field.search-field-in-popup{
+  --sf-h: 52px;
+  --sf-pad-x: 16px;
+  --sf-icon: 18px;
+  --sf-gap: 12px;
+}
+.search-field.search-field-in-popup .search-field-input{
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  font-size: 14px;
+}
+.dark .search-field.search-field-in-popup .search-field-input{ background: transparent; box-shadow: none; }
+.dark .search-field.search-field-in-popup .search-field-input:hover{ background: transparent; }
+.search-field.search-field-in-popup .search-field-input:focus{ box-shadow: none; }
+.search-field.search-field-in-popup .search-field-kbd{ right: 14px; }
+.popup-body{
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* ============================================================
+   REACT-BIG-CALENDAR — premium dark calendar overhaul
+   Light mode preserved; dark mode is the focus
+   ============================================================ */
+.rbc-toolbar{ display: none !important }
+
+.rbc-month-view,
+.rbc-time-view,
+.rbc-agenda-view{
+  border: 1px solid hsl(var(--border));
+  border-radius: 16px;
+  overflow: hidden;
+  background: hsl(var(--card));
+}
+.dark .rbc-month-view,
+.dark .rbc-time-view,
+.dark .rbc-agenda-view{
+  background: hsl(var(--surface-2));
+  border-color: rgba(255,255,255,.06);
+  box-shadow: var(--shadow-sm);
+}
+
+/* Default (light) borders */
+.rbc-header,
+.rbc-timeslot-group,
+.rbc-day-bg,
+.rbc-time-content,
+.rbc-month-row,
+.rbc-time-header-content,
+.rbc-time-header.rbc-overflowing,
+.rbc-time-gutter,
+.rbc-time-column,
+.rbc-day-slot,
+.rbc-time-slot{
+  border-color: hsl(var(--border)) !important;
+}
+
+/* ---- DARK GRID: reduce visibility by ~70%, make it feel like a designed surface not Excel ---- */
+.dark .rbc-month-view,
+.dark .rbc-time-view{
+  background: hsl(var(--surface-2));
+}
+.dark .rbc-time-content{
+  border-top: 1px solid rgba(255,255,255,.06) !important;
+}
+.dark .rbc-time-content > * + * > *{
+  border-left-color: rgba(255,255,255,.04) !important;  /* vertical day separators — very subtle */
+}
+.dark .rbc-timeslot-group{
+  border-bottom: 1px solid rgba(255,255,255,.05) !important;  /* major hour separator */
+  min-height: 64px;
+}
+.dark .rbc-time-slot{
+  border-top: 1px solid rgba(255,255,255,.025) !important; /* minor 30-min separator — almost invisible */
+}
+.dark .rbc-day-bg + .rbc-day-bg{
+  border-left: 1px solid rgba(255,255,255,.04) !important;
+}
+.dark .rbc-month-row + .rbc-month-row{
+  border-top: 1px solid rgba(255,255,255,.05) !important;
+}
+.dark .rbc-month-row{ overflow: visible; }
+.dark .rbc-day-bg{ background: transparent; }
+.dark .rbc-off-range-bg{
+  background: rgba(255,255,255,.015) !important;
+}
+.rbc-off-range-bg{ background: rgba(128,128,128,.06) }
+
+/* ---- DAY HEADERS — better hierarchy ---- */
+.rbc-header{
+  padding: 12px 10px;
+  font-size: 11px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  color: hsl(var(--muted-foreground));
+  border-bottom: 1px solid hsl(var(--border));
+}
+.dark .rbc-header{
+  color: hsl(var(--text-secondary));
+  background: hsl(var(--surface-2));
+  border-bottom: 1px solid rgba(255,255,255,.06) !important;
+  font-weight: 500;
+}
+.dark .rbc-header + .rbc-header{
+  border-left: 1px solid rgba(255,255,255,.04) !important;
+}
+.dark .rbc-month-header{
+  background: hsl(var(--surface-2));
+  border-bottom: 1px solid rgba(255,255,255,.06) !important;
+}
+.dark .rbc-time-header{
+  background: hsl(var(--surface-2));
+  border-bottom: 1px solid rgba(255,255,255,.06) !important;
+}
+.rbc-time-header-content{
+  border-left-color: hsl(var(--border)) !important;
+}
+.dark .rbc-time-header-content{
+  border-left-color: rgba(255,255,255,.06) !important;
+}
+
+/* Date cell text in month view */
+.rbc-date-cell{
+  padding: 6px 8px;
+  text-align: right;
+  font-size: 12px;
+  color: hsl(var(--muted-foreground));
+}
+.dark .rbc-date-cell{ color: hsl(var(--text-secondary)); }
+.rbc-date-cell.rbc-now > a{ font-weight: 700; color: hsl(var(--foreground)); }
+.dark .rbc-date-cell.rbc-now > a{ color: hsl(var(--focus)); }
+
+/* ---- TIME LABELS — muted, smaller, less attention ---- */
+.rbc-label,
+.rbc-time-gutter .rbc-timeslot-group{
+  font-size: 10.5px;
+  font-weight: 500;
+  color: hsl(var(--muted-foreground));
+}
+.dark .rbc-time-gutter,
+.dark .rbc-label{
+  color: hsl(var(--text-muted)) !important;
+  font-weight: 500;
+}
+.dark .rbc-time-gutter{
+  background: hsl(var(--surface-2));
+  border-right: 1px solid rgba(255,255,255,.05) !important;
+}
+.rbc-time-gutter .rbc-time-slot{ border-top: none !important; }
+
+/* ---- TODAY — soft tint instead of strong block ---- */
+.rbc-today{ background: rgba(99,102,241,.06) }
+.dark .rbc-today{
+  background:
+    linear-gradient(180deg, rgba(79,140,255,.045), rgba(79,140,255,.02)) !important;
+  position: relative;
+}
+
+/* ---- EVENTS — elevated, rounded, soft shadow ---- */
+.rbc-event{
+  border: none !important;
+  border-radius: 10px !important;
+  padding: 4px 8px !important;
+  font-size: 12px !important;
+  font-weight: 500 !important;
+  box-shadow: 0 1px 2px rgba(15,23,42,.08) !important;
+  transition: transform .15s ease, box-shadow .2s ease, filter .15s ease !important;
+}
+.rbc-event:hover{
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(15,23,42,.14) !important;
+  filter: brightness(1.02);
+}
+.dark .rbc-event{
+  box-shadow:
+    0 1px 0 rgba(255,255,255,.04) inset,
+    0 1px 2px rgba(0,0,0,.30) !important;
+  color: hsl(var(--text-primary)) !important;
+}
+.dark .rbc-event:hover{
+  box-shadow:
+    0 1px 0 rgba(255,255,255,.06) inset,
+    0 6px 18px rgba(0,0,0,.40) !important;
+  filter: brightness(1.10);
+}
+.rbc-event.rbc-selected{
+  box-shadow: 0 0 0 2px hsl(var(--focus) / .5), 0 4px 12px rgba(0,0,0,.18) !important;
+}
+
+/* ---- CURRENT TIME INDICATOR — modern, with glow + dot ---- */
+.rbc-current-time-indicator{
+  background: hsl(0 80% 60%);
+  height: 1.5px;
+  position: relative;
+  z-index: 3;
+  box-shadow: 0 0 8px hsl(0 80% 60% / .35);
+}
+.dark .rbc-current-time-indicator{
+  background: hsl(0 85% 62%);
+  box-shadow: 0 0 10px hsl(0 85% 62% / .5);
+}
+.rbc-current-time-indicator::before{
+  content:'';
+  position: absolute;
+  left: -5px;
+  top: 50%;
+  width: 9px;
+  height: 9px;
+  border-radius: 999px;
+  background: hsl(0 80% 60%);
+  transform: translateY(-50%);
+  box-shadow: 0 0 0 3px hsl(var(--background)), 0 0 10px hsl(0 80% 60% / .55);
+}
+.dark .rbc-current-time-indicator::before{
+  background: hsl(0 85% 62%);
+  box-shadow: 0 0 0 3px hsl(var(--surface-2)), 0 0 12px hsl(0 85% 62% / .65);
+}
+
+/* All-day row */
+.rbc-allday-cell{ min-height: 30px; }
+.dark .rbc-allday-cell{
+  background: hsl(var(--surface-2));
+  border-bottom: 1px solid rgba(255,255,255,.05) !important;
+}
+
+/* Agenda view */
+.rbc-agenda-table{ font-size: 13px; }
+.dark .rbc-agenda-table thead > tr > th{
+  background: hsl(var(--surface-2));
+  color: hsl(var(--text-secondary));
+  border-bottom: 1px solid rgba(255,255,255,.06) !important;
+}
+.dark .rbc-agenda-table tbody > tr > td{
+  border-color: rgba(255,255,255,.04) !important;
+  color: hsl(var(--text-primary));
+}
+.dark .rbc-agenda-empty{ color: hsl(var(--text-muted)); }
+
+/* Show-more in month view */
+.rbc-show-more{
+  color: hsl(var(--focus));
+  font-weight: 600;
+  background: transparent;
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 6px;
+}
+.dark .rbc-show-more:hover{ background: hsl(var(--focus) / .12); }
+
+/* ============================================================
+   PROSE LINE-HEIGHT / TYPOGRAPHY in dark
+   ============================================================ */
+.dark .text-zinc-500{ color: hsl(var(--text-muted)) !important; }
+.dark .text-zinc-400{ color: hsl(var(--text-muted)) !important; }
+.dark .text-zinc-600{ color: hsl(var(--text-secondary)) !important; }
+.dark .text-zinc-700{ color: hsl(var(--text-secondary)) !important; }
+
+/* Convert generic gray containers to layered surfaces */
+.dark .bg-zinc-50{ background: hsl(var(--surface-3)) !important; }
+.dark .bg-zinc-100{ background: hsl(var(--surface-3)) !important; }
+.dark .bg-zinc-200{ background: hsl(var(--surface-4)) !important; }
+.dark .bg-zinc-700{ background: hsl(var(--surface-hover)) !important; }
+.dark .bg-zinc-800{ background: hsl(var(--surface-3)) !important; }
+.dark .bg-zinc-900{ background: hsl(var(--surface-2)) !important; }
+.dark .hover\:bg-zinc-100:hover{ background: hsl(var(--surface-hover)) !important; }
+.dark .hover\:bg-zinc-800:hover{ background: hsl(var(--surface-hover)) !important; }
+
+/* The Orbit logo bubble (bg-black dark:bg-white) – keep contrast premium */
+.dark .bg-black{ background: hsl(var(--surface-4)) !important; color: hsl(var(--text-primary)) !important; }
+
+/* Sidebar / panel container borders */
+.dark .border-r,
+.dark .border-l,
+.dark .border-b,
+.dark .border-t,
+.dark .border{
+  border-color: rgba(255,255,255,.06);
+}
+
+/* ============================================================
+   ANIMATIONS / TRANSITIONS — global helpers
+   ============================================================ */
+.transition,
+.transition-all{ transition-duration: 180ms !important; transition-timing-function: cubic-bezier(.4,0,.2,1) !important; }
+
+@media (prefers-reduced-motion: reduce){
+  *{ animation: none !important; transition: none !important; }
+}
+
+/* ============================================================
+   FOCUS RINGS — accessible & on-brand
+   ============================================================ */
+:where(button, a, input, select, textarea):focus-visible{
+  outline: none;
+  box-shadow: 0 0 0 2px hsl(var(--background)), 0 0 0 4px hsl(var(--focus) / .5);
+  border-radius: 10px;
+}
+
+/* ============================================================
+   ALL TASKS quick-link in sidebar — premium accent
+   ============================================================ */
+.all-tasks-link{
+  @apply mx-3 mt-2 flex items-center justify-between gap-2 rounded-xl px-3 py-2 text-sm;
+  background: linear-gradient(135deg, hsl(var(--focus) / .14), hsl(var(--focus) / .06));
+  border: 1px solid hsl(var(--focus) / .25);
+  color: hsl(var(--text-primary));
+  transition: background .18s ease, transform .15s ease, box-shadow .2s ease;
+}
+.all-tasks-link:hover{
+  background: linear-gradient(135deg, hsl(var(--focus) / .22), hsl(var(--focus) / .10));
+  transform: translateY(-0.5px);
+  box-shadow: 0 4px 14px hsl(var(--focus) / .18);
+}
+.dark .all-tasks-link{
+  background: linear-gradient(135deg, hsl(var(--focus) / .18), hsl(var(--focus) / .06));
+  border-color: hsl(var(--focus) / .30);
+}
+.dark .all-tasks-link:hover{
+  background: linear-gradient(135deg, hsl(var(--focus) / .28), hsl(var(--focus) / .12));
+}
+.all-tasks-link .all-tasks-count{
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: hsl(var(--focus) / .22);
+  color: hsl(var(--focus));
+}
+.dark .all-tasks-link .all-tasks-count{
+  background: hsl(var(--focus) / .25);
+  color: #cfe1ff;
+}
+
+/* ============================================================
+   v3 UPDATE — Mobile polish, nest drop targets, compact filter
+   ============================================================ */
+
+/* ---- Nest drop target: highlight a task row when another task is being
+   dragged INSIDE it (cursor near vertical middle). Drop = make this task
+   the new parent of the dragged task. ---- */
+.task-row-nest-target{
+  background: hsl(var(--focus) / .10) !important;
+  border-color: hsl(var(--focus) / .45) !important;
+  box-shadow:
+    0 0 0 1px hsl(var(--focus) / .35),
+    0 6px 20px -10px hsl(var(--focus) / .35) !important;
+  transition: background .18s ease, border-color .18s ease, box-shadow .18s ease;
+}
+.dark .task-row-nest-target{
+  background: hsl(var(--focus) / .16) !important;
+  border-color: hsl(var(--focus) / .55) !important;
+  box-shadow:
+    0 0 0 1px hsl(var(--focus) / .5),
+    0 10px 28px -10px hsl(var(--focus) / .55) !important;
+}
+
+/* ---- Reorder insertion line: rendered above OR below a task row when the
+   cursor is near its top / bottom edge during a drag. Full-width, accent
+   colored, with a soft glow that picks up the design system focus color. */
+.task-row-wrap{ position: relative; }
+.task-drop-line{
+  position: relative;
+  height: 0;
+  margin: 0;
+  pointer-events: none;
+}
+.task-drop-line::before{
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 4px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, hsl(var(--focus) / .25), hsl(var(--focus)) 50%, hsl(var(--focus) / .25));
+  box-shadow: 0 0 0 1px hsl(var(--focus) / .35), 0 6px 18px -6px hsl(var(--focus) / .55);
+  animation: task-drop-line-in .18s ease-out;
+}
+.task-drop-line::after{
+  content: '';
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: hsl(var(--focus));
+  box-shadow: 0 0 0 3px hsl(var(--focus) / .25);
+  left: 0;
+  transform: translate(-2px, -3px);
+  animation: task-drop-line-in .18s ease-out;
+}
+.task-drop-line-top{ margin-bottom: 6px; }
+.task-drop-line-top::before{ top: -1px; }
+.task-drop-line-top::after{ top: -1px; }
+.task-drop-line-bottom{ margin-top: 6px; }
+.task-drop-line-bottom::before{ bottom: -1px; }
+.task-drop-line-bottom::after{ bottom: -1px; }
+@keyframes task-drop-line-in {
+  from { opacity: 0; transform: scaleY(.5); }
+  to   { opacity: 1; transform: scaleY(1); }
+}
+
+/* ---- All Tasks: compact filter chips + popover styling ---- */
+.filter-chip{
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 500;
+  background: hsl(var(--focus) / .10);
+  color: hsl(var(--focus));
+  border: 1px solid hsl(var(--focus) / .22);
+  transition: background .15s;
+}
+.filter-chip:hover{ background: hsl(var(--focus) / .16); }
+.dark .filter-chip{
+  background: hsl(var(--focus) / .14);
+  color: #cfe1ff;
+  border-color: hsl(var(--focus) / .30);
+}
+
+.filter-toggle{
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  cursor: pointer;
+  border: 1px solid hsl(var(--border));
+  background: transparent;
+  color: hsl(var(--muted-foreground));
+  transition: background .15s, border-color .15s, color .15s;
+}
+.filter-toggle:hover{
+  background: hsl(var(--accent));
+  color: hsl(var(--foreground));
+}
+.filter-toggle input[type='checkbox']{
+  width: 12px;
+  height: 12px;
+  accent-color: hsl(var(--focus));
+  margin: 0;
+}
+.filter-toggle:has(input:checked){
+  background: hsl(var(--focus) / .12);
+  border-color: hsl(var(--focus) / .35);
+  color: hsl(var(--focus));
+}
+.dark .filter-toggle:has(input:checked){ color: #cfe1ff; }
+
+.alltasks-filter-pop{
+  border-radius: 14px;
+  box-shadow: var(--shadow-lg), 0 0 0 1px hsl(var(--border));
+  background: hsl(var(--card));
+  animation: alltasks-pop-in .14s ease-out;
+}
+.dark .alltasks-filter-pop{
+  box-shadow: var(--shadow-lg), 0 0 0 1px rgba(255,255,255,.06);
+  background: hsl(var(--surface-3));
+}
+@keyframes alltasks-pop-in {
+  from { opacity: 0; transform: translateY(-4px) scale(.98); }
+  to   { opacity: 1; transform: translateY(0)    scale(1); }
+}
+
+/* ============================================================
+   MOBILE: All Tasks header — compact single-row filter toolbar.
+
+   Goal: on phones, put the title on one line, and search + filter +
+   sort-key + sort-direction on a single second row that hugs the
+   available width. Search stretches (flex-1), the filter and
+   sort-direction buttons become square icon-only 36px tiles, and the
+   sort-key select shrinks to a compact 9-char width. Padding is
+   reduced so the task list gets more vertical breathing room.
+
+   Desktop (>=769px) is untouched — the strip renders exactly as before.
+   ============================================================ */
+@media (max-width: 768px){
+  /* Header container: less vertical padding, tighter gap */
+  .alltasks-header{
+    padding-top: 8px !important;
+    padding-bottom: 8px !important;
+    gap: 6px !important;
+    row-gap: 6px !important;
+  }
+
+  /* The filter strip becomes its own full-width row (no wrap inside) */
+  .alltasks-filter-strip{
+    margin-left: 0 !important;   /* cancel ml-auto so it sits flush left */
+    width: 100%;
+    flex-wrap: nowrap !important;
+    gap: 6px !important;
+  }
+
+  /* Search grows to fill remaining space */
+  .alltasks-filter-strip .alltasks-search{
+    flex: 1 1 auto;
+    width: auto !important;
+    min-width: 0;
+  }
+  .alltasks-filter-strip .alltasks-search .search-field-input{
+    height: 36px;
+  }
+
+  /* Filter button becomes a square icon tile on mobile */
+  .alltasks-filter-strip .alltasks-filter-btn{
+    height: 36px !important;
+    width: 36px !important;
+    min-width: 36px;
+    padding: 0 !important;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+    flex: 0 0 auto;
+  }
+  /* Hide the "Filters" label on mobile; icon + count badge remain */
+  .alltasks-filter-strip .alltasks-btn-label{
+    display: none !important;
+  }
+  /* Float the active-count badge in the corner of the icon tile */
+  .alltasks-filter-strip .alltasks-filter-btn > span:not(.alltasks-btn-label){
+    position: absolute;
+    top: -4px;
+    right: -4px;
+    box-shadow: 0 0 0 2px hsl(var(--card));
+  }
+  .dark .alltasks-filter-strip .alltasks-filter-btn > span:not(.alltasks-btn-label){
+    box-shadow: 0 0 0 2px hsl(var(--surface-2));
+  }
+
+  /* Sort-key select: compact but still readable */
+  .alltasks-filter-strip .alltasks-sort-key{
+    height: 36px !important;
+    min-width: 0 !important;
+    width: 96px !important;
+    padding-left: 8px !important;
+    padding-right: 22px !important;
+    flex: 0 0 auto;
+  }
+
+  /* Sort-direction button: perfectly centered icon */
+  .alltasks-filter-strip .alltasks-sort-dir{
+    height: 36px !important;
+    width: 36px !important;
+    min-width: 36px;
+    padding: 0 !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    flex: 0 0 auto;
+  }
+  .alltasks-filter-strip .alltasks-sort-dir svg{
+    display: block;
+    margin: 0;
+  }
+
+  /* Reset button: icon-only on mobile to preserve the single-row layout */
+  .alltasks-filter-strip .alltasks-reset{
+    height: 36px !important;
+    width: 36px !important;
+    min-width: 36px;
+    padding: 0 !important;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+  }
+}
+
+/* On very narrow phones (<= 380px), further shrink the sort-key select so
+   the whole strip still fits without horizontal scroll. */
+@media (max-width: 380px){
+  .alltasks-filter-strip .alltasks-sort-key{ width: 84px !important; }
+  .alltasks-filter-strip{ gap: 5px !important; }
+}
+
+/* Ensure the sort-direction icon is perfectly centered on every viewport,
+   not just mobile (safe belt-and-suspenders — no visible change on desktop
+   because the button was already square, but this locks in the alignment). */
+.alltasks-sort-dir{
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.alltasks-sort-dir svg{ display: block; }
+
+/* ============================================================
+   MOBILE: task row spacing — kill the left & right gutters
+   so the title gets the whole width on phones.
+   Applies in NORMAL mode (compact mode already has its own rules).
+   ============================================================ */
+@media (max-width: 768px){
+  /* 1. Reduce padding on the row so we recover horizontal space */
+  .task-row{
+    padding: 10px 12px !important;
+  }
+
+  /* 2. Hide the right "more" menu button on mobile.
+        The new compact drag handle stays visible and takes its place. */
+  .task-row .task-row-menu{
+    display: none !important;
+  }
+
+  /* 3. Hide the subtask-toggle column only when there are NO children
+        (it normally renders with `invisible` to reserve space — on mobile
+        we'd rather reclaim that space). When children exist it remains
+        visible and tappable. */
+  .task-row .subtask-toggle.invisible{
+    display: none !important;
+  }
+
+  /* 4. Tighten the inner flex gap so the status icon sits right next to the title */
+  .task-row > div.flex.gap-3{
+    gap: 8px !important;
+  }
+  .task-row > div.flex.gap-3 > .min-w-0.flex-1 > .flex.items-start{
+    gap: 6px !important;
+  }
+
+  /* 5. Slightly bigger tap target for the status dot icon */
+  .task-row button > svg{
+    min-width: 16px;
+  }
+
+  /* 6. The favorite star stays — it's a low-friction one-tap action.
+        But shrink its hit-area so it doesn't dominate the row right side. */
+  .task-row .task-favorite-toggle{
+    padding: 2px;
+  }
+
+  /* 7. Subtask indentation: smaller on mobile so nested rows don't squeeze */
+  .subtask-children{
+    padding-left: 16px;
+    margin-left: 6px;
+  }
+
+  /* 8. Make sure long titles wrap nicely without pushing the favorite off */
+  .task-row .text-sm.font-medium{
+    word-break: break-word;
+    line-height: 1.35;
+  }
+}
+
+/* ============================================================
+   MOBILE: react-big-calendar — make day/agenda/month views usable.
+   Goals: bigger headers, smaller time gutter, readable events,
+   horizontal scroll on multi-day, no awkward overflow.
+   ============================================================ */
+.calendar-page{ overflow: hidden; }
+.calendar-toolbar .input{ min-width: 0; }
+
+/* The calendar fills available height on every breakpoint. min-width: 0 on the
+   flex child is required so the month grid (7 equal-width day columns) can
+   actually shrink to fit a narrow phone screen instead of overflowing —
+   without it the flex item refuses to go below its content's min-content
+   width and the whole grid spills past the viewport edge. */
+.calendar-surface{ display: flex; min-height: 0; min-width: 0; }
+.calendar-surface > div{ flex: 1 1 auto; min-height: 0; min-width: 0; }
+
+@media (max-width: 768px){
+  /* Tighter outer padding */
+  .calendar-page{ padding: 12px !important; gap: 10px !important; }
+
+  /* Compact, modern toolbar — a single dense row that maximizes the space
+     left for the actual calendar grid below it. */
+  .calendar-toolbar{
+    padding: 6px 8px !important;
+    border-radius: 14px;
+    background: hsl(var(--card));
+    border: 1px solid hsl(var(--border));
+    gap: 6px !important;
+  }
+  .dark .calendar-toolbar{
+    background: hsl(var(--surface-2));
+    border-color: rgba(255,255,255,.06);
+  }
+  .calendar-toolbar .btn{ min-width: 0; }
+  .calendar-toolbar select.input{
+    border-radius: 10px;
+    padding-left: 8px !important;
+    padding-right: 22px !important;
+  }
+
+  /* Smaller, denser calendar surfaces on small screens */
+  .rbc-month-view,
+  .rbc-time-view,
+  .rbc-agenda-view{
+    border-radius: 12px;
+  }
+
+  .rbc-header{
+    padding: 8px 4px !important;
+    font-size: 10px !important;
+    letter-spacing: .04em;
+  }
+
+  /* Smaller time gutter so day/week views aren't choked */
+  .rbc-time-gutter{
+    width: 44px !important;
+    min-width: 44px !important;
+    max-width: 44px !important;
+  }
+  .rbc-time-gutter .rbc-label{
+    font-size: 9.5px !important;
+    padding: 0 4px !important;
+  }
+
+  /* Hour rows: shorter so a typical 12-hour view fits without ladder feel */
+  .rbc-timeslot-group{
+    min-height: 48px !important;
+  }
+
+  /* Events: tighter padding so titles actually fit */
+  .rbc-event{
+    padding: 2px 6px !important;
+    font-size: 11px !important;
+    border-radius: 8px !important;
+    min-height: 22px !important;
+  }
+  .rbc-event-content{
+    line-height: 1.25 !important;
+  }
+
+  /* Month view: compact day cells, hide "+more" overflow more gracefully */
+  .rbc-month-view{ font-size: 11px; }
+  .rbc-date-cell{ padding: 4px 6px !important; font-size: 11px !important; }
+  .rbc-row-segment{ padding: 0 2px !important; }
+  .rbc-show-more{ font-size: 10px !important; padding: 0 4px !important; }
+
+  /* Agenda view: spacing & readable rows */
+  .rbc-agenda-table.table{ font-size: 12px !important; }
+  .rbc-agenda-table thead > tr > th,
+  .rbc-agenda-table tbody > tr > td{
+    padding: 8px 6px !important;
+  }
+  .rbc-agenda-time-cell{ white-space: nowrap; }
+  .rbc-agenda-date-cell{ font-weight: 600; }
+
+  /* Day view: a single column gets the full width — make slots tappable */
+  .rbc-day-slot .rbc-events-container{
+    margin-right: 4px !important;
+  }
+
+  /* Long-press resize handles can interfere on touch; keep them but slim. */
+  .rbc-addons-dnd-resize-ns-icon,
+  .rbc-addons-dnd-resize-ew-icon{
+    display: none !important;
+  }
+
+  /* Toolbar on mobile: keep buttons small */
+  .calendar-toolbar .btn{ font-size: 12px !important; }
+
+  /* Hide native scrollbar inside the calendar to avoid layout shift on iOS */
+  .rbc-time-content{ scrollbar-width: thin; }
+  .rbc-time-content::-webkit-scrollbar{ width: 4px; height: 4px; }
+}
+
+/* Even tighter on very small screens */
+@media (max-width: 380px){
+  .rbc-time-gutter{ width: 38px !important; min-width: 38px !important; max-width: 38px !important; }
+  .rbc-header{ font-size: 9px !important; padding: 6px 2px !important; }
+  .rbc-event{ font-size: 10px !important; }
+}
+
+/* ============================================================
+   MOBILE: drag-rail bottom sheet for the calendar page
+   ============================================================ */
+.cal-mobile-sheet{
+  position: fixed;
+  left: 8px;
+  right: 8px;
+  bottom: 8px;
+  z-index: 60;
+  max-height: 78vh;
+  display: flex;
+  flex-direction: column;
+  border-radius: 18px;
+  overflow: hidden;
+  background: hsl(var(--card));
+  box-shadow: var(--shadow-lg), 0 0 0 1px hsl(var(--border));
+}
+.dark .cal-mobile-sheet{
+  background: hsl(var(--surface-3));
+  box-shadow: var(--shadow-lg), 0 0 0 1px rgba(255,255,255,.06);
+}
+.cal-mobile-sheet-handle{
+  width: 40px;
+  height: 4px;
+  border-radius: 999px;
+  background: hsl(var(--border));
+  margin: 8px auto 4px;
+  flex: 0 0 auto;
+}
+.dark .cal-mobile-sheet-handle{ background: rgba(255,255,255,.18); }
+
+/* ============================================================
+   Touch DnD: make sure drag activates on mobile without page scroll
+   ============================================================ */
+.task-row{
+  touch-action: manipulation;
+}
+.task-row.is-dragging{
+  opacity: .6;
+}
+
+/* Prevent the page from horizontally scrolling on very narrow phones */
+@media (max-width: 640px){
+  html, body, #root{
+    overflow-x: hidden;
+  }
+}
+
+/* ============================================================
+   v5 UPDATE — desktop keeps whole-row drag, mobile uses a compact handle
+   ============================================================ */
+
+.task-drag-handle{
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
+  align-self: flex-start;
+  margin-top: -2px;
+  border-radius: 8px;
+  color: hsl(var(--muted-foreground));
+  background: transparent;
+  border: 0;
+  touch-action: none;
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
+}
+.task-drag-handle svg{
+  width: 16px;
+  height: 16px;
+  opacity: .72;
+}
+.task-drag-handle:hover{
+  background: hsl(var(--accent));
+  color: hsl(var(--foreground));
+}
+.task-drag-handle:active{
+  background: hsl(var(--accent));
+  color: hsl(var(--foreground));
+}
+
+/* Desktop keeps the whole row as the drag affordance so existing pointer / mouse
+   behavior, animations, and nested drag interactions remain unchanged. */
+.task-row.task-row-draggable{
+  cursor: pointer;
+  touch-action: pan-y;
+  user-select: none;
+  -webkit-user-select: none;
+  -moz-user-select: none;
+  -ms-user-select: none;
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* All descendants of a draggable row inherit the same no-select / no-callout
+   behavior so the browser doesn't try to select the row's text content when
+   the user long-presses the title or the description. */
+.task-row.task-row-draggable,
+.task-row.task-row-draggable *{
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+.task-row.task-row-draggable:hover{
+  cursor: grab;
+}
+.task-row.task-row-draggable:active{
+  cursor: grabbing;
+}
+.task-row.task-row-draggable.is-dragging{
+  cursor: grabbing;
+  /* Note: while dragging, the row's WRAPPER is collapsed to 0 height in JS so
+     no placeholder slot pushes the list down. These visual styles are kept for
+     backwards-compat in case anything else still renders the row. */
+  opacity: .55;
+  box-shadow: 0 18px 40px -10px rgba(0,0,0,.18), 0 0 0 1px hsl(var(--focus) / .35);
+  transform: scale(.99);
+  z-index: 5;
+}
+
+/* ============================================================
+   Global drag lock — while ANY task drag is in progress, disable native
+   selection, callouts, and context menus across the whole document so the
+   user can only trigger drag-and-drop. Toggled by <body class="is-dnd-dragging">
+   from App.tsx onDragStart / onDragEnd / onDragCancel.
+   ============================================================ */
+body.is-dnd-dragging{
+  -webkit-user-select: none !important;
+  user-select: none !important;
+  -webkit-touch-callout: none !important;
+  cursor: grabbing;
+}
+body.is-dnd-dragging *{
+  -webkit-user-select: none !important;
+  user-select: none !important;
+  -webkit-touch-callout: none !important;
+}
+.dark .task-row.task-row-draggable.is-dragging{
+  box-shadow: 0 24px 48px -10px rgba(0,0,0,.6), 0 0 0 1px hsl(var(--focus) / .45);
+}
+
+/* Mobile: while dragging, keep the row visible above the rest and surface only
+   the compact handle as the drag activator. */
+@media (max-width: 768px){
+  .task-row.task-row-draggable.is-dragging{
+    transform: scale(1);
+  }
+  .task-drag-handle{
+    display: inline-flex;
+  }
+}
+
+/* ============================================================
+   Mobile drag preview (rendered inside dnd-kit <DragOverlay>) — the ONLY
+   drag-related visual on touch devices. Slightly scaled down + low opacity so
+   it reads as a "lifted" floating copy that follows the finger. Non-interactive.
+   ============================================================ */
+.task-drag-preview{
+  /* Slightly smaller than the real row + translucent → clear "floating" cue. */
+  transform: scale(.92);
+  opacity: .82;
+  pointer-events: none;
+  cursor: grabbing;
+  box-shadow: 0 22px 48px -12px rgba(0,0,0,.35), 0 0 0 1px hsl(var(--focus) / .4);
+  /* Keep the preview compact and readable regardless of the source row height. */
+  max-width: 92vw;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+.dark .task-drag-preview{
+  box-shadow: 0 26px 54px -12px rgba(0,0,0,.7), 0 0 0 1px hsl(var(--focus) / .5);
+}
+
+/* ============================================================
+   Mobile drag lock hardening — while a task drag is in progress on a touch
+   device, neutralize EVERY interaction that could interrupt / glitch the drag:
+   long-press callout, text selection & highlight, hover / press visuals,
+   focus changes, and stray taps on interactive controls inside rows. The drag
+   preview above is the only thing allowed to react. Everything is restored the
+   instant the drag ends (the body.is-dnd-dragging class is removed).
+   ============================================================ */
+@media (max-width: 640px){
+  body.is-dnd-dragging{
+    /* Kill iOS text-selection highlight / magnifier during the drag. */
+    -webkit-tap-highlight-color: transparent;
+  }
+  /* No text can be selected or highlighted anywhere while dragging. */
+  body.is-dnd-dragging *,
+  body.is-dnd-dragging *::before,
+  body.is-dnd-dragging *::after{
+    -webkit-user-select: none !important;
+    user-select: none !important;
+    -webkit-touch-callout: none !important;
+    -webkit-tap-highlight-color: transparent !important;
+  }
+  /* Freeze hover / active / press visuals on the (collapsed) source row and
+     every other row so nothing flickers under the moving finger. */
+  body.is-dnd-dragging .task-row.task-row-draggable:hover,
+  body.is-dnd-dragging .task-row.task-row-draggable:active{
+    cursor: grabbing;
+    transform: none;
+    box-shadow: none;
+  }
+  /* Block taps on the in-row interactive controls (menu / favorite / status /
+     expand) during the drag so a drop can't accidentally trigger them or steal
+     focus. Re-enabled automatically when the lock class is removed. */
+  body.is-dnd-dragging .task-row .task-row-menu,
+  body.is-dnd-dragging .task-row .task-favorite-toggle,
+  body.is-dnd-dragging .task-row .subtask-toggle{
+    pointer-events: none !important;
+  }
+  /* Never surface the hover-only "actions" button mid-drag. */
+  body.is-dnd-dragging .task-row .task-row-menu{
+    opacity: 0 !important;
+  }
+}
+
+/* ============================================================
+   v4 UPDATE — Calendar mobile: Week / Month / Agenda all usable
+   ============================================================ */
+
+/* Week view on mobile: horizontally scroll columns so each day gets enough
+   width to actually be readable. Without this, 7 columns crushed into ~350px
+   make events unreadable. We make the time-view wider than the viewport
+   and scroll horizontally inside the calendar surface. */
+@media (max-width: 768px){
+  .calendar-surface-mobile.cal-view-week .rbc-time-view{
+    /* Allow horizontal scroll: each day column has a minimum readable width. */
+    min-width: 720px;
+  }
+  .calendar-surface-mobile.cal-view-week{
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    /* The inner calendar should be ALLOWED to be wider than the surface. */
+  }
+  .calendar-surface-mobile.cal-view-week > div{
+    min-width: 720px;
+  }
+  /* Day headers stay sticky on horizontal scroll for context. */
+  .calendar-surface-mobile.cal-view-week .rbc-time-header{
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    background: hsl(var(--card));
+  }
+  .dark .calendar-surface-mobile.cal-view-week .rbc-time-header{
+    background: hsl(var(--surface-2));
+  }
+
+  /* Day view: full width, taller rows for finger tapping. */
+  .calendar-surface-mobile.cal-view-day .rbc-timeslot-group{
+    min-height: 56px !important;
+  }
+
+  /* Month view: more breathing room so a phone month-grid isn't claustrophobic. */
+  .calendar-surface-mobile.cal-view-month .rbc-month-row{
+    min-height: 64px;
+  }
+  .calendar-surface-mobile.cal-view-month .rbc-event{
+    font-size: 10.5px !important;
+    padding: 1px 5px !important;
+  }
+  /* Agenda: more comfortable list rows. */
+  .calendar-surface-mobile.cal-view-agenda .rbc-agenda-view{
+    padding: 4px;
+  }
+  .calendar-surface-mobile.cal-view-agenda .rbc-agenda-table tbody > tr > td{
+    padding: 10px 8px !important;
+  }
+}
+
+/* Compact horizontal scrollbar inside mobile week view. */
+.calendar-surface-mobile.cal-view-week::-webkit-scrollbar{ height: 4px; }
+.calendar-surface-mobile.cal-view-week::-webkit-scrollbar-thumb{
+  background: hsl(var(--border));
+  border-radius: 999px;
+}
+
+/* ============================================================
+   v4 UPDATE — Project Documentation: premium editor design
+   ============================================================ */
+.project-doc-pane{
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background:
+    radial-gradient(circle at top right, hsl(var(--focus) / .04), transparent 40%),
+    hsl(var(--background));
+}
+.dark .project-doc-pane{
+  background:
+    radial-gradient(circle at top right, hsl(var(--focus) / .08), transparent 40%),
+    hsl(var(--surface-1));
+}
+
+.project-doc{
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+  padding: 16px;
+  gap: 12px;
+}
+@media (min-width: 768px){
+  .project-doc{ padding: 24px; gap: 14px; }
+}
+
+.project-doc-header{
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.project-doc-header-row{
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.project-doc-tabs{
+  display: inline-flex;
+  padding: 3px;
+  background: hsl(var(--muted));
+  border-radius: 10px;
+  gap: 2px;
+}
+.dark .project-doc-tabs{
+  background: hsl(var(--surface-3));
+}
+.project-doc-tab{
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 500;
+  color: hsl(var(--muted-foreground));
+  background: transparent;
+  border: none;
+  transition: background .15s, color .15s, box-shadow .15s;
+  cursor: pointer;
+}
+.project-doc-tab:hover{ color: hsl(var(--foreground)); }
+.project-doc-tab.is-active{
+  background: hsl(var(--card));
+  color: hsl(var(--foreground));
+  box-shadow: 0 1px 2px rgba(0,0,0,.05), 0 0 0 1px hsl(var(--border));
+}
+.dark .project-doc-tab.is-active{
+  background: hsl(var(--surface-4));
+  box-shadow: 0 1px 2px rgba(0,0,0,.4), 0 0 0 1px rgba(255,255,255,.06);
+}
+
+.project-doc-toolbar{
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 6px;
+  border-radius: 12px;
+  background: hsl(var(--card));
+  border: 1px solid hsl(var(--border));
+}
+.dark .project-doc-toolbar{
+  background: hsl(var(--surface-2));
+  border-color: rgba(255,255,255,.06);
+}
+.doc-tool{
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-width: 30px;
+  height: 30px;
+  padding: 0 8px;
+  border-radius: 8px;
+  border: none;
+  background: transparent;
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background .15s, color .15s, transform .1s;
+}
+.doc-tool:hover{
+  background: hsl(var(--accent));
+  color: hsl(var(--foreground));
+}
+.doc-tool:active{ transform: translateY(1px); }
+.doc-tool .doc-tool-h{ font-weight: 700; font-size: 11px; }
+.doc-tool code{ font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
+.doc-tool-sep{
+  width: 1px;
+  height: 18px;
+  background: hsl(var(--border));
+  margin: 0 4px;
+  align-self: center;
+}
+
+.project-doc-body{
+  flex: 1 1 auto;
+  min-height: 0;
+  border-radius: 14px;
+  background: hsl(var(--card));
+  border: 1px solid hsl(var(--border));
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+.dark .project-doc-body{
+  background: hsl(var(--surface-2));
+  border-color: rgba(255,255,255,.06);
+  box-shadow: var(--shadow-sm);
+}
+
+.project-doc-textarea{
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 280px;
+  resize: none;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: hsl(var(--foreground));
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13.5px;
+  line-height: 1.65;
+  padding: 18px 20px;
+  letter-spacing: 0;
+}
+.project-doc-textarea::placeholder{
+  color: hsl(var(--muted-foreground));
+  opacity: .8;
+}
+
+.project-doc-preview{
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 22px 24px;
+}
+
+.project-doc-footer{
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-top: 2px;
+}
+
+.doc-save-pill{
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 500;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: hsl(var(--muted));
+  color: hsl(var(--muted-foreground));
+}
+.dark .doc-save-pill{ background: hsl(var(--surface-3)); }
+.doc-save-pill .doc-save-dot{
+  width: 6px; height: 6px; border-radius: 999px;
+  background: hsl(var(--muted-foreground));
+}
+.doc-save-pill.is-saved{
+  background: hsl(142 70% 45% / .12);
+  color: hsl(142 70% 35%);
+}
+.doc-save-pill.is-saved .doc-save-dot{ background: hsl(142 70% 45%); box-shadow: 0 0 0 3px hsl(142 70% 45% / .15); }
+.dark .doc-save-pill.is-saved{
+  background: hsl(142 70% 45% / .18);
+  color: hsl(142 70% 60%);
+}
+.doc-save-pill.is-saving{
+  background: hsl(35 90% 55% / .12);
+  color: hsl(35 90% 38%);
+}
+.doc-save-pill.is-saving .doc-save-dot{
+  background: hsl(35 90% 55%);
+  animation: doc-save-pulse 1s ease-in-out infinite;
+}
+.dark .doc-save-pill.is-saving{
+  background: hsl(35 90% 55% / .18);
+  color: hsl(35 90% 65%);
+}
+@keyframes doc-save-pulse{
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%      { opacity: .5; transform: scale(.85); }
+}
+
+/* ----- Rendered markdown preview ----- */
+.doc-preview-body{
+  font-size: 14px;
+  line-height: 1.7;
+  color: hsl(var(--foreground));
+  max-width: 72ch;
+}
+.doc-empty-state{
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  text-align: center;
+  padding: 48px 16px;
+  color: hsl(var(--muted-foreground));
+}
+.doc-preview-body .doc-h1,
+.doc-preview-body .doc-h2,
+.doc-preview-body .doc-h3,
+.doc-preview-body .doc-h4{
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  margin: 1.4em 0 .5em;
+  line-height: 1.3;
+}
+.doc-preview-body .doc-h1{ font-size: 24px; margin-top: .3em; }
+.doc-preview-body .doc-h2{ font-size: 19px; }
+.doc-preview-body .doc-h3{ font-size: 16px; }
+.doc-preview-body .doc-h4{ font-size: 14px; }
+.doc-preview-body .doc-p{
+  margin: 0 0 .8em;
+}
+.doc-preview-body .doc-ul,
+.doc-preview-body .doc-ol{
+  margin: 0 0 .8em;
+  padding-left: 4px;
+  list-style: none;
+}
+.doc-preview-body .doc-ol{ counter-reset: ol; padding-left: 12px; }
+.doc-preview-body .doc-ol .doc-li{ counter-increment: ol; }
+.doc-preview-body .doc-ol .doc-li::before{
+  content: counter(ol) ". ";
+  color: hsl(var(--muted-foreground));
+  font-feature-settings: "tnum";
+  margin-right: 6px;
+}
+.doc-preview-body .doc-li{
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  padding: 2px 0;
+}
+.doc-preview-body .doc-li-text{ flex: 1; }
+.doc-preview-body .doc-bullet{
+  width: 6px; height: 6px;
+  border-radius: 999px;
+  background: hsl(var(--muted-foreground));
+  margin-top: 9px;
+  flex-shrink: 0;
+}
+.doc-preview-body .doc-check{
+  width: 18px; height: 18px;
+  border: 1.5px solid hsl(var(--border));
+  border-radius: 5px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 2px;
+  flex-shrink: 0;
+  transition: background .15s, border-color .15s;
+}
+.doc-preview-body .doc-check.is-done{
+  background: hsl(142 70% 45%);
+  border-color: hsl(142 70% 45%);
+  color: white;
+}
+.doc-preview-body .doc-li-done .doc-li-text{
+  text-decoration: line-through;
+  color: hsl(var(--muted-foreground));
+}
+.doc-preview-body .doc-quote{
+  margin: .8em 0;
+  padding: 6px 0 6px 14px;
+  border-left: 3px solid hsl(var(--focus));
+  background: hsl(var(--focus) / .04);
+  border-radius: 0 8px 8px 0;
+  color: hsl(var(--text-secondary, var(--muted-foreground)));
+  font-style: italic;
+}
+.doc-preview-body .doc-pre{
+  margin: .8em 0;
+  background: hsl(var(--muted));
+  border: 1px solid hsl(var(--border));
+  border-radius: 10px;
+  padding: 12px 14px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12.5px;
+  line-height: 1.6;
+  overflow-x: auto;
+}
+.dark .doc-preview-body .doc-pre{
+  background: hsl(var(--surface-3));
+  border-color: rgba(255,255,255,.06);
+}
+.doc-preview-body .doc-hr{
+  border: 0;
+  border-top: 1px solid hsl(var(--border));
+  margin: 1.4em 0;
+}
+.doc-inline-code{
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: .88em;
+  background: hsl(var(--muted));
+  border: 1px solid hsl(var(--border));
+  padding: 1.5px 5px;
+  border-radius: 5px;
+}
+.dark .doc-inline-code{ background: hsl(var(--surface-3)); border-color: rgba(255,255,255,.06); }
+.doc-inline-link{
+  color: hsl(var(--focus));
+  text-decoration: underline;
+  text-decoration-color: hsl(var(--focus) / .4);
+  text-underline-offset: 2px;
+}
+.doc-inline-link:hover{ text-decoration-color: hsl(var(--focus)); }
+
+/* ============================================================
+   v4 UPDATE — Project page layout: side-by-side on lg, MOBILE: the
+   Documentation panel becomes a COLLAPSIBLE FOOTER that's collapsed by
+   default, leaving the entire project surface visible. A small chevron
+   toggle expands / collapses it on tap.
+   ============================================================ */
+@media (max-width: 1023px){
+  /* Switch the project page to a single column with the main area filling
+     the available space. The doc pane is taken out of normal flow and
+     positioned as a docked footer (see .project-doc-mobile-drawer below). */
+  .project-page-layout{
+    grid-template-columns: 1fr !important;
+    grid-template-rows: 1fr !important;
+    position: relative;
+  }
+  .project-page-layout > .project-page-main{
+    border-right: 0 !important;
+    border-bottom: 0 !important;
+    /* Reserve room for the collapsed footer toggle so content doesn't sit
+       under it. The expanded body is overlayed and scrolls independently. */
+    padding-bottom: 64px !important;
+  }
+
+  /* Collapsible footer panel ---------------------------------------- */
+  .project-doc-mobile-drawer{
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 25;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    background: hsl(var(--card));
+    border-top: 1px solid hsl(var(--border));
+    border-radius: 16px 16px 0 0;
+    box-shadow: 0 -10px 30px -12px rgba(0,0,0,.18);
+    transition: height .28s cubic-bezier(.2,.8,.2,1), box-shadow .28s ease;
+    overflow: hidden;
+  }
+  .dark .project-doc-mobile-drawer{
+    background: hsl(var(--surface-2));
+    border-top-color: rgba(255,255,255,.08);
+    box-shadow: 0 -14px 40px -14px rgba(0,0,0,.55);
+  }
+  .project-doc-mobile-drawer.is-closed{
+    height: 52px;          /* JUST the toggle row — nothing else visible. */
+  }
+  .project-doc-mobile-drawer.is-open{
+    height: min(72vh, 560px);
+    box-shadow: 0 -22px 60px -16px rgba(0,0,0,.32);
+  }
+  .dark .project-doc-mobile-drawer.is-open{
+    box-shadow: 0 -26px 70px -16px rgba(0,0,0,.7);
+  }
+
+  /* The tap target that toggles the footer. Spans the full width so it's
+     easy to hit on touch, and includes an up/down chevron indicator. */
+  .project-doc-mobile-drawer-toggle{
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    height: 52px;
+    padding: 0 16px;
+    background: transparent;
+    border: 0;
+    border-bottom: 1px solid hsl(var(--border));
+    font-size: 13px;
+    font-weight: 600;
+    color: hsl(var(--foreground));
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .dark .project-doc-mobile-drawer-toggle{
+    border-bottom-color: rgba(255,255,255,.06);
+  }
+  .project-doc-mobile-drawer-toggle:active{
+    background: hsl(var(--accent));
+  }
+  .project-doc-mobile-drawer-label{
+    flex: 0 0 auto;
+  }
+  .project-doc-mobile-drawer-hint{
+    flex: 1 1 auto;
+    text-align: right;
+    font-size: 11px;
+    font-weight: 500;
+    color: hsl(var(--muted-foreground));
+  }
+  /* Chevron animates between right-pointing (collapsed) and pointing UP
+     when expanded, giving a clear up/down arrow affordance. */
+  .project-doc-mobile-drawer-chevron{
+    color: hsl(var(--muted-foreground));
+    transform: rotate(90deg); /* down arrow when CLOSED  */
+  }
+  .project-doc-mobile-drawer-chevron.is-open{
+    transform: rotate(-90deg); /* up arrow when OPEN */
+  }
+
+  /* The scrollable body content of the footer. Only visible when expanded. */
+  .project-doc-mobile-drawer-body{
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  .project-doc-mobile-drawer.is-closed .project-doc-mobile-drawer-body{
+    /* Hide content fully when collapsed so it can never "peek". */
+    visibility: hidden;
+    pointer-events: none;
+  }
+
+  /* Make sure the in-pane doc background tweaks don't fight the footer. */
+  .project-doc-mobile-drawer .project-doc{ padding: 14px 16px 24px; }
+}
+
+/* On larger phones / small tablets, give a bit more breathing room when open. */
+@media (max-width: 1023px) and (min-width: 640px){
+  .project-doc-mobile-drawer.is-open{
+    height: min(70vh, 620px);
+  }
+}
+
+/* ============================================================
+   v4 UPDATE — Task Description editor (best-of-class style)
+   ============================================================ */
+.task-desc{
+  position: relative;
+  border-radius: 14px;
+  background: hsl(var(--card));
+  border: 1px solid hsl(var(--border));
+  transition: border-color .18s, box-shadow .18s, background .18s;
+  overflow: hidden;
+}
+.dark .task-desc{
+  background: hsl(var(--surface-2));
+  border-color: rgba(255,255,255,.06);
+}
+.task-desc.is-focused{
+  border-color: hsl(var(--focus) / .55);
+  box-shadow: 0 0 0 4px hsl(var(--focus) / .12);
+}
+.task-desc.is-empty{
+  background: transparent;
+  border-style: dashed;
+}
+.dark .task-desc.is-empty{
+  background: transparent;
+}
+
+.task-desc-label{
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 12px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  color: hsl(var(--muted-foreground));
+  border-bottom: 1px solid transparent;
+  transition: border-color .18s;
+}
+.task-desc.is-focused .task-desc-label,
+.task-desc:not(.is-empty) .task-desc-label{
+  border-bottom-color: hsl(var(--border));
+}
+.dark .task-desc.is-focused .task-desc-label,
+.dark .task-desc:not(.is-empty) .task-desc-label{
+  border-bottom-color: rgba(255,255,255,.06);
+}
+
+.task-desc-mode{
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 8px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 500;
+  text-transform: none;
+  letter-spacing: 0;
+  color: hsl(var(--muted-foreground));
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  transition: background .15s, color .15s;
+}
+.task-desc-mode:hover{ color: hsl(var(--foreground)); background: hsl(var(--accent)); }
+.task-desc-mode.is-active{
+  background: hsl(var(--muted));
+  color: hsl(var(--foreground));
+}
+.dark .task-desc-mode.is-active{ background: hsl(var(--surface-4)); }
+
+.task-desc-toolbar{
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 6px 8px;
+  border-bottom: 1px solid hsl(var(--border));
+  background: hsl(var(--background) / .6);
+}
+.dark .task-desc-toolbar{
+  background: hsl(var(--surface-1) / .5);
+  border-bottom-color: rgba(255,255,255,.06);
+}
+.task-desc-toolbar .doc-tool{
+  min-width: 26px;
+  height: 26px;
+  padding: 0 6px;
+  font-size: 11px;
+}
+
+.task-desc-textarea{
+  width: 100%;
+  min-height: 96px;
+  max-height: 50vh;
+  resize: none;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: hsl(var(--foreground));
+  font-size: 14px;
+  line-height: 1.65;
+  padding: 14px 16px;
+  font-family: inherit;
+}
+.task-desc-textarea::placeholder{
+  color: hsl(var(--muted-foreground));
+  opacity: .9;
+}
+
+.task-desc-preview{
+  padding: 16px 18px;
+  min-height: 96px;
+  max-height: 50vh;
+  overflow-y: auto;
+}
+
+.task-desc-hint{
+  padding: 0 16px 14px;
+  font-size: 12px;
+  color: hsl(var(--muted-foreground));
+}
+
+/* Task details title: more comfortable input */
+.task-details-title{
+  letter-spacing: -0.01em;
+  line-height: 1.3;
+}
+.task-details-title::placeholder{
+  color: hsl(var(--muted-foreground));
+  font-weight: 500;
+  opacity: .6;
+}
+
+/* On mobile, give the task details a comfy gradient background so the
+   description editor feels properly integrated. */
+@media (max-width: 768px){
+  .task-desc{ border-radius: 12px; }
+  .task-desc-textarea{ padding: 12px 14px; font-size: 15px; }
+  .task-desc-toolbar{ overflow-x: auto; flex-wrap: nowrap; -webkit-overflow-scrolling: touch; }
+  .task-desc-toolbar::-webkit-scrollbar{ display: none; }
+}

@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Orbit — Redirecting…</title>
+    <script>
+      // GitHub Pages / static-host SPA fallback: preserve the original path
+      // and hand it off to index.html so React Router can render it.
+      (function () {
+        var redirect = sessionStorage.redirect;
+        sessionStorage.removeItem('redirect');
+        if (redirect && redirect !== location.href) {
+          history.replaceState(null, '', redirect);
+        } else {
+          sessionStorage.redirect = location.href;
+          location.replace('/');
+        }
+      })();
+    </script>
+  </head>
+  <body></body>
+</html>
