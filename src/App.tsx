@@ -7,12 +7,12 @@ import { useForm, Controller } from 'react-hook-form'
 import { z } from 'zod'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { motion, AnimatePresence } from 'framer-motion'
-import { DndContext, DragOverlay, PointerSensor, TouchSensor, closestCenter, useSensor, useSensors, type DragEndEvent, type DragMoveEvent, type DragStartEvent } from '@dnd-kit/core'
+import { DndContext, DragOverlay, PointerSensor, TouchSensor, closestCenter, useSensor, useSensors, useDraggable, useDroppable, type DragEndEvent, type DragMoveEvent, type DragStartEvent } from '@dnd-kit/core'
 import { SortableContext, arrayMove, useSortable, verticalListSortingStrategy, type SortingStrategy } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import { Calendar as BigCalendar, dateFnsLocalizer, Views, type View, type Event } from 'react-big-calendar'
 import withDragAndDrop from 'react-big-calendar/lib/addons/dragAndDrop'
-import { format, parse, startOfWeek, getDay, addDays, parseISO, isToday, isPast, endOfWeek, eachDayOfInterval, isWithinInterval } from 'date-fns'
+import { format, parse, startOfWeek, getDay, addDays, parseISO, isToday, isPast, endOfWeek, eachDayOfInterval, isWithinInterval, startOfMonth, endOfMonth, isSameMonth, isSameDay } from 'date-fns'
 import { enUS } from 'date-fns/locale/en-US'
 import {
   LayoutDashboard, Sun, CalendarDays, FolderKanban, Star, CheckCircle2, Archive, Hash, Settings,
@@ -3054,6 +3054,178 @@ function ProjectDocumentation({ project, onChange }: { project: Project; onChang
   )
 }
 
+/* ============================================================
+   MOBILE-ONLY calendar month grid with drag-and-drop
+   ------------------------------------------------------------
+   react-big-calendar's drag-and-drop addon (`withDragAndDrop`)
+   drives the DESKTOP calendar and relies on mouse events, which
+   do not translate to reliable cell-to-cell dragging on touch
+   devices. To give phones the same "drag a task from one day to
+   another" capability WITHOUT touching the desktop code path,
+   we render this self-contained month grid instead — but ONLY
+   on mobile AND only for the Month view. Everything else
+   (all desktop views + mobile Day / Week / Agenda) keeps using
+   the untouched <DragAndDropCalendar>.
+
+   Drag interactions use @dnd-kit with a TouchSensor, exactly the
+   same primitives the rest of the app already uses for mobile
+   drag (task lists), so touch behavior stays consistent.
+   ============================================================ */
+
+// A single scheduled task chip that can be picked up and dragged.
+function MobileMonthEventChip({ task, onOpen }: { task: Task; onOpen: () => void }) {
+  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
+    id: `cal-event-${task.id}`,
+    data: { taskId: task.id },
+  })
+  const hex = priorityMeta[task.priority].hex
+  const isDark = typeof document !== 'undefined' && document.documentElement.classList.contains('dark')
+  return (
+    <button
+      ref={setNodeRef}
+      {...attributes}
+      {...listeners}
+      type='button'
+      // A tap (no drag) opens the task; the TouchSensor's activation delay
+      // keeps taps and drags cleanly separated.
+      onClick={onOpen}
+      className={cn('cal-m-event', isDragging && 'cal-m-event-dragging')}
+      style={{
+        background: isDark ? hex + '33' : hex + '22',
+        borderLeft: `3px solid ${hex}`,
+      }}
+      aria-label={`Task ${task.title}. Drag to move to another day.`}
+    >
+      <span className='cal-m-event-title'>{task.title}</span>
+    </button>
+  )
+}
+
+// A droppable day cell. Highlights while a chip hovers over it.
+function MobileMonthDayCell({
+  day, currentMonth, tasks, onOpenTask, onSelectDay,
+}: {
+  day: Date
+  currentMonth: Date
+  tasks: Task[]
+  onOpenTask: (id: string) => void
+  onSelectDay: (day: Date) => void
+}) {
+  const dayKey = format(day, 'yyyy-MM-dd')
+  const { setNodeRef, isOver } = useDroppable({ id: `cal-day-${dayKey}`, data: { dayKey } })
+  const inMonth = isSameMonth(day, currentMonth)
+  const today = isToday(day)
+  return (
+    <div
+      ref={setNodeRef}
+      className={cn(
+        'cal-m-cell',
+        !inMonth && 'cal-m-cell-muted',
+        today && 'cal-m-cell-today',
+        isOver && 'cal-m-cell-over',
+      )}
+      onClick={() => onSelectDay(day)}
+    >
+      <div className='cal-m-cell-date'>{format(day, 'd')}</div>
+      <div className='cal-m-cell-events'>
+        {tasks.map(t => (
+          <MobileMonthEventChip key={t.id} task={t} onOpen={() => onOpenTask(t.id)} />
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function MobileCalendarMonth({
+  date, events, onMoveTask, onOpenTask, onSelectDay,
+}: {
+  date: Date
+  events: (Event & { resource: Task })[]
+  onMoveTask: (taskId: string, dayKey: string) => void
+  onOpenTask: (id: string) => void
+  onSelectDay: (day: Date) => void
+}) {
+  // Touch-first sensors. A short press-delay lets a plain tap through to the
+  // chip's onClick (open task) while a held-then-moved gesture starts a drag.
+  const sensors = useSensors(
+    useSensor(TouchSensor, { activationConstraint: { delay: 180, tolerance: 8 } }),
+    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+  )
+  const [activeTaskId, setActiveTaskId] = useState<string | null>(null)
+
+  // Six-week grid (42 cells) that always starts on the week containing the
+  // 1st and covers the whole month — mirrors react-big-calendar's month layout.
+  const gridDays = useMemo(() => {
+    const first = startOfWeek(startOfMonth(date), { weekStartsOn: 0 })
+    const last = endOfWeek(endOfMonth(date), { weekStartsOn: 0 })
+    return eachDayOfInterval({ start: first, end: last })
+  }, [date])
+
+  // Bucket scheduled tasks by their day so each cell can render its own chips.
+  const tasksByDay = useMemo(() => {
+    const map = new Map<string, Task[]>()
+    for (const e of events) {
+      const key = format(e.start as Date, 'yyyy-MM-dd')
+      const arr = map.get(key) || []
+      arr.push(e.resource)
+      map.set(key, arr)
+    }
+    for (const arr of map.values()) sortTasks(arr)
+    return map
+  }, [events])
+
+  const activeTask: Task | null = activeTaskId ? (events.find(e => e.resource.id === activeTaskId)?.resource ?? null) : null
+  const weekDayLabels = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+
+  return (
+    <DndContext
+      sensors={sensors}
+      collisionDetection={closestCenter}
+      onDragStart={(e: DragStartEvent) => setActiveTaskId((e.active.data.current as any)?.taskId ?? null)}
+      onDragEnd={(e: DragEndEvent) => {
+        const taskId = (e.active.data.current as any)?.taskId as string | undefined
+        const dayKey = (e.over?.data.current as any)?.dayKey as string | undefined
+        if (taskId && dayKey) onMoveTask(taskId, dayKey)
+        setActiveTaskId(null)
+      }}
+      onDragCancel={() => setActiveTaskId(null)}
+    >
+      <div className='cal-m-grid'>
+        <div className='cal-m-weekdays'>
+          {weekDayLabels.map(l => <div key={l} className='cal-m-weekday'>{l}</div>)}
+        </div>
+        <div className='cal-m-cells'>
+          {gridDays.map(day => (
+            <MobileMonthDayCell
+              key={day.toISOString()}
+              day={day}
+              currentMonth={date}
+              tasks={tasksByDay.get(format(day, 'yyyy-MM-dd')) || []}
+              onOpenTask={onOpenTask}
+              onSelectDay={onSelectDay}
+            />
+          ))}
+        </div>
+      </div>
+      <DragOverlay dropAnimation={null}>
+        {activeTask && (
+          <div
+            className='cal-m-event cal-m-event-overlay'
+            style={{
+              borderLeft: `3px solid ${priorityMeta[activeTask.priority].hex}`,
+              background: (typeof document !== 'undefined' && document.documentElement.classList.contains('dark'))
+                ? priorityMeta[activeTask.priority].hex + '55'
+                : priorityMeta[activeTask.priority].hex + '33',
+            }}
+          >
+            <span className='cal-m-event-title'>{activeTask.title}</span>
+          </div>
+        )}
+      </DragOverlay>
+    </DndContext>
+  )
+}
+
 function CalendarPage() {
   const tasks = useData(s => s.tasks)
   const addTask = useData(s => s.addTask)
@@ -3108,6 +3280,18 @@ function CalendarPage() {
       dueDate: format(start, 'yyyy-MM-dd'),
       time: allDay ? undefined : format(start, 'HH:mm'),
       estimatedMinutes: minutes,
+      status: task.status === 'done' ? 'planned' : task.status,
+    })
+  }
+
+  // Mobile month-view drag: reschedule a task to a new day cell. Only the date
+  // changes — the task's existing time (if any) and duration are preserved,
+  // matching how dropping across day columns behaves conceptually.
+  const moveTaskToDay = (taskId: string, dayKey: string) => {
+    const task = taskMap.get(taskId)
+    if (!task || task.dueDate === dayKey) return
+    updateTask(task.id, {
+      dueDate: dayKey,
       status: task.status === 'done' ? 'planned' : task.status,
     })
   }
@@ -3176,6 +3360,17 @@ function CalendarPage() {
           )}
         </div>
         <div className={cn('calendar-surface min-h-0 flex-1', isMobile && 'calendar-surface-mobile', isMobile && `cal-view-${view}`)}>
+          {isMobile && view === Views.MONTH ? (
+            /* Mobile-only month grid with touch drag-and-drop between day cells.
+               Desktop and other mobile views are untouched below. */
+            <MobileCalendarMonth
+              date={date}
+              events={events}
+              onMoveTask={moveTaskToDay}
+              onOpenTask={(id) => setUI({ selected: id, details: true })}
+              onSelectDay={(day) => setSlotDraft({ start: day, end: day, view: Views.MONTH })}
+            />
+          ) : (
           <DragAndDropCalendar
             localizer={localizer}
             events={events}
@@ -3222,6 +3417,7 @@ function CalendarPage() {
               }
             }}
           />
+          )}
         </div>
       </div>
       {/* Desktop side rail (>= xl). On mobile this same content renders inside a
