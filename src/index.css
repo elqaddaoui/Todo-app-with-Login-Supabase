@@ -674,6 +674,39 @@
 }
 .dark .popup-overlay{ background: rgba(0,0,0,.55); }
 
+/* Quick Settings popup — a compact shortcut to the Settings page.
+   Anchors near the top-left topbar button on desktop; on small screens
+   it becomes a centered sheet so it never clips off-canvas. */
+.quick-settings-popup{
+  position: fixed;
+  z-index: 50;
+  top: 64px;
+  left: 16px;
+  width: 380px;
+  max-width: calc(100vw - 32px);
+  max-height: min(80vh, 640px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: 18px;
+  box-shadow: 0 24px 60px -12px rgba(0,0,0,.35);
+}
+.quick-settings-body{
+  min-height: 0;
+  flex: 1;
+}
+@media (max-width: 480px){
+  .quick-settings-popup{
+    top: auto;
+    bottom: 12px;
+    left: 12px;
+    right: 12px;
+    width: auto;
+    max-width: none;
+    max-height: 80vh;
+  }
+}
+
 .popup-shell{
   position: fixed;
   z-index: 50;

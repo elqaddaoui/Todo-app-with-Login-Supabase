@@ -7,4 +7,9 @@ import react from '@vitejs/plugin-react'
 // and public/_redirects (Netlify/Cloudflare Pages).
 export default defineConfig({
   plugins: [react()],
+  // Allow the app to be previewed through sandbox/proxy hostnames during
+  // development. This only affects the local dev/preview servers, never the
+  // production build output.
+  server: { host: true, allowedHosts: true },
+  preview: { host: true, allowedHosts: true },
 })

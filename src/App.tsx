@@ -20,7 +20,7 @@ import {
   MoreHorizontal, Trash2, Pencil, Moon, Monitor, MessageSquare, Paperclip, ListChecks, GripVertical,
   Sparkles, Target, Rocket, BookOpen, Heart, Briefcase, Circle, PauseCircle, Ban, PlayCircle, CalendarClock,
   Copy, Link as LinkIcon, ExternalLink, FolderInput, Tag as TagIcon,
-  Image as ImageIcon, MapPinned, ArrowUp, ArrowDown
+  Image as ImageIcon, MapPinned, ArrowUp, ArrowDown, Move, SlidersHorizontal
 } from 'lucide-react'
 import { createPortal } from 'react-dom'
 
@@ -204,7 +204,9 @@ const useUI = create<{
   quick: boolean; command: boolean; filters: boolean;
   theme: 'light' | 'dark' | 'system'; sidebarW: number; detailsW: number;
   compactMode: boolean;
+  dndEnabled: boolean;
   quickParentId: string | null;
+  quickSettings: boolean;
   set: (p: Partial<any>) => void
 }>()(persist(
   (set) => ({
@@ -212,11 +214,17 @@ const useUI = create<{
     quick: false, command: false, filters: false,
     theme: 'system', sidebarW: 280, detailsW: 380,
     compactMode: false,
+    dndEnabled: true,
     quickParentId: null,
+    quickSettings: false,
     set: (p) => set(p),
   }),
   { name: 'orbit-ui' }
 ))
+
+/** Global drag-and-drop toggle. Read this anywhere a drag interaction is
+ *  wired up; when it returns false the interaction must become inert. */
+const useDndEnabled = () => useUI(s => s.dndEnabled)
 
 // Apply compact mode class to <html> so CSS can target it globally
 const applyCompactMode = (on: boolean) => {
@@ -800,10 +808,11 @@ function TaskRow({ task, showProject = true, depth = 0 }: { task: Task; showProj
   const isSelected = selected === task.id
   const ctx = useContextMenu()
   const isMobileTaskCard = useMedia('(max-width: 768px)')
-  const rowDragAttributes = isMobileTaskCard ? {} : attributes
-  const rowDragListeners = isMobileTaskCard ? {} : listeners
-  const handleDragAttributes = isMobileTaskCard ? attributes : {}
-  const handleDragListeners = isMobileTaskCard ? listeners : {}
+  const dndEnabled = useDndEnabled()
+  const rowDragAttributes = !dndEnabled ? {} : isMobileTaskCard ? {} : attributes
+  const rowDragListeners = !dndEnabled ? {} : isMobileTaskCard ? {} : listeners
+  const handleDragAttributes = !dndEnabled ? {} : isMobileTaskCard ? attributes : {}
+  const handleDragListeners = !dndEnabled ? {} : isMobileTaskCard ? listeners : {}
   const [renaming, setRenaming] = useState(false)
   const [confirming, setConfirming] = useState(false)
 
@@ -917,7 +926,7 @@ function TaskRow({ task, showProject = true, depth = 0 }: { task: Task; showProj
         ref={setNodeRef}
         {...rowDragAttributes}
         {...rowDragListeners}
-        className={cn('group panel p-3 cursor-grab active:cursor-grabbing task-row task-row-draggable', isSelected && 'is-selected', nestHighlight && 'task-row-nest-target')}
+        className={cn('group panel p-3 task-row', dndEnabled && 'cursor-grab active:cursor-grabbing task-row-draggable', isSelected && 'is-selected', nestHighlight && 'task-row-nest-target')}
         onClick={() => { if (longPressRef.current.fired) { longPressRef.current.fired = false; return } setUI({ selected: task.id, details: true }) }}
         onContextMenu={isMobileTaskCard ? (e) => { e.preventDefault(); e.stopPropagation() } : openMenu}
         onTouchStart={onTouchStart}
@@ -953,7 +962,7 @@ function TaskRow({ task, showProject = true, depth = 0 }: { task: Task; showProj
               <button className='task-favorite-toggle' onPointerDown={e => e.stopPropagation()} onClick={e => { e.stopPropagation(); toggleFav(task.id) }} aria-label='Toggle favorite'>
                 <Star className={cn('h-4 w-4', task.favorite ? 'fill-amber-400 text-amber-400' : 'text-zinc-400')} />
               </button>
-              {isMobileTaskCard && (
+              {isMobileTaskCard && dndEnabled && (
                 <button
                   type='button'
                   ref={setActivatorNodeRef}
@@ -1678,6 +1687,7 @@ function Sidebar() {
 }
 
 function ProjectItem({ project }: { project: Project }) {
+  const dndEnabled = useDndEnabled()
   const { attributes, listeners, setNodeRef, transform, transition } = useSortable({ id: project.id })
   const style = { transform: CSS.Transform.toString(transform), transition, ['--project-color' as any]: project.color }
   const count = useData(s => s.tasks).filter(t => t.projectId === project.id && t.status !== 'done' && !t.archived).length
@@ -1711,9 +1721,11 @@ function ProjectItem({ project }: { project: Project }) {
         className={({ isActive }) => cn('project-item', isActive && 'is-active')}
         onContextMenu={openMenu}
       >
-        <button {...attributes} {...listeners} className='opacity-40 hover:opacity-100 transition' onClick={e => e.stopPropagation()}>
-          <GripVertical className='h-3 w-3 text-zinc-400' />
-        </button>
+        {dndEnabled && (
+          <button {...attributes} {...listeners} className='opacity-40 hover:opacity-100 transition' onClick={e => e.stopPropagation()}>
+            <GripVertical className='h-3 w-3 text-zinc-400' />
+          </button>
+        )}
         <span className='project-dot' style={{ background: project.color }} />
         <IconProject name={project.icon} color={project.color} className='!h-7 !w-7' />
         <span className='flex-1 truncate font-medium'>{project.name}</span>
@@ -1744,8 +1756,15 @@ function Topbar() {
       <button className='btn btn-ghost md:hidden' onClick={() => ui.set({ mobileNav: true })}>
         <Menu className='h-4 w-4' />
       </button>
-      <button className='btn btn-ghost hidden md:inline-flex' onClick={() => ui.set({ sidebar: !ui.sidebar })}>
-        <PanelLeft className='h-4 w-4' />
+      <button
+        className='btn btn-ghost hidden md:inline-flex'
+        onClick={() => ui.set({ quickSettings: !ui.quickSettings })}
+        aria-haspopup='dialog'
+        aria-expanded={ui.quickSettings}
+        title='Quick settings'
+      >
+        <SlidersHorizontal className='h-4 w-4' />
+        <span className='hidden lg:inline'>Quick settings</span>
       </button>
       <button className='btn btn-ghost' onClick={() => ui.set({ filters: true })}>
         <Filter className='h-4 w-4' />
@@ -2399,21 +2418,73 @@ function TagsPage() {
   )
 }
 
-function SettingsPage() {
+/* ------------------------------------------------------------------
+   Reusable switch used by every settings surface. Reads/writes the
+   SAME useUI store, so any instance (main page or Quick Settings popup)
+   stays in sync automatically — flipping one updates the other live.
+   ------------------------------------------------------------------ */
+function Switch({ checked, onChange, label }: { checked: boolean; onChange: () => void; label?: string }) {
+  return (
+    <button
+      type='button'
+      role='switch'
+      aria-checked={checked}
+      aria-label={label}
+      onClick={onChange}
+      className={cn(
+        'relative inline-flex h-6 w-11 items-center rounded-full transition shrink-0',
+        checked ? 'bg-indigo-500' : 'bg-zinc-300 dark:bg-zinc-700'
+      )}
+    >
+      <span
+        className={cn(
+          'inline-block h-5 w-5 transform rounded-full bg-white shadow transition',
+          checked ? 'translate-x-5' : 'translate-x-0.5'
+        )}
+      />
+    </button>
+  )
+}
+
+/* Shared settings body. `compact` renders a tighter version for the
+   Quick Settings popup; the full version powers the main Settings page.
+   Both operate on the identical useUI store so they are always in sync. */
+function SettingsContent({ compact = false }: { compact?: boolean }) {
   const ui = useUI()
   return (
-    <div className='p-6 max-w-3xl space-y-6 overflow-y-auto h-full'>
-      <Card>
+    <div className={cn(compact ? 'space-y-4' : 'space-y-6')}>
+      <Card className={cn(compact && '!p-4')}>
         <div className='text-sm font-semibold mb-3'>Appearance</div>
         <div className='grid grid-cols-3 gap-2'>
           {(['light', 'dark', 'system'] as const).map(m => (
-            <button key={m} onClick={() => ui.set({ theme: m })} className={cn('panel p-4 text-sm capitalize', ui.theme === m && 'ring-2 ring-indigo-500/30')}>{m}</button>
+            <button key={m} onClick={() => ui.set({ theme: m })} className={cn('panel text-sm capitalize', compact ? 'p-2.5' : 'p-4', ui.theme === m && 'ring-2 ring-indigo-500/30')}>{m}</button>
           ))}
         </div>
       </Card>
 
+      {/* ====== Global Drag & Drop toggle ====== */}
+      <Card className={cn(compact && '!p-4')}>
+        <div className='flex items-start gap-3'>
+          <div className='flex-1'>
+            <div className='text-sm font-semibold flex items-center gap-2'>
+              <Move className='h-4 w-4 text-zinc-500' />Drag &amp; drop
+            </div>
+            <div className='mt-1 text-xs text-zinc-500'>
+              {ui.dndEnabled ? 'Enabled' : 'Disabled'} — controls every drag-and-drop
+              interaction across the app: reordering tasks, subtasks and projects,
+              moving cards on the board, and dragging tasks onto the calendar.
+            </div>
+          </div>
+          <Switch
+            checked={ui.dndEnabled}
+            onChange={() => ui.set({ dndEnabled: !ui.dndEnabled })}
+            label='Enable or disable drag and drop'
+          />
+        </div>
+      </Card>
+
       {/* ====== Density / Layout toggle ====== */}
-      <Card>
+      <Card className={cn(compact && '!p-4')}>
         <div className='flex items-start gap-3'>
           <div className='flex-1'>
             <div className='text-sm font-semibold'>Compact layout</div>
@@ -2423,72 +2494,129 @@ function SettingsPage() {
               dozens of rows at a glance. Toggle off to return to the spacious view.
             </div>
           </div>
-          <button
-            type='button'
-            role='switch'
-            aria-checked={ui.compactMode}
-            onClick={() => ui.set({ compactMode: !ui.compactMode })}
-            className={cn(
-              'relative inline-flex h-6 w-11 items-center rounded-full transition shrink-0',
-              ui.compactMode ? 'bg-indigo-500' : 'bg-zinc-300 dark:bg-zinc-700'
-            )}
-          >
-            <span
-              className={cn(
-                'inline-block h-5 w-5 transform rounded-full bg-white shadow transition',
-                ui.compactMode ? 'translate-x-5' : 'translate-x-0.5'
-              )}
-            />
-          </button>
+          <Switch
+            checked={ui.compactMode}
+            onChange={() => ui.set({ compactMode: !ui.compactMode })}
+            label='Toggle compact layout'
+          />
         </div>
-        <div className='mt-4 grid sm:grid-cols-2 gap-3'>
-          <button
-            onClick={() => ui.set({ compactMode: false })}
-            className={cn('panel p-3 text-left', !ui.compactMode && 'ring-2 ring-indigo-500/40')}
-          >
-            <div className='text-xs font-semibold mb-2'>Spacious</div>
-            <div className='space-y-1.5'>
-              <div className='h-3 rounded bg-zinc-200 dark:bg-zinc-700 w-3/4' />
-              <div className='h-2 rounded bg-zinc-100 dark:bg-zinc-800 w-1/2' />
-              <div className='flex gap-1.5 pt-1'>
-                <div className='h-2 w-8 rounded bg-zinc-100 dark:bg-zinc-800' />
-                <div className='h-2 w-10 rounded bg-zinc-100 dark:bg-zinc-800' />
+        {!compact && (
+          <div className='mt-4 grid sm:grid-cols-2 gap-3'>
+            <button
+              onClick={() => ui.set({ compactMode: false })}
+              className={cn('panel p-3 text-left', !ui.compactMode && 'ring-2 ring-indigo-500/40')}
+            >
+              <div className='text-xs font-semibold mb-2'>Spacious</div>
+              <div className='space-y-1.5'>
+                <div className='h-3 rounded bg-zinc-200 dark:bg-zinc-700 w-3/4' />
+                <div className='h-2 rounded bg-zinc-100 dark:bg-zinc-800 w-1/2' />
+                <div className='flex gap-1.5 pt-1'>
+                  <div className='h-2 w-8 rounded bg-zinc-100 dark:bg-zinc-800' />
+                  <div className='h-2 w-10 rounded bg-zinc-100 dark:bg-zinc-800' />
+                </div>
               </div>
-            </div>
-          </button>
-          <button
-            onClick={() => ui.set({ compactMode: true })}
-            className={cn('panel p-3 text-left', ui.compactMode && 'ring-2 ring-indigo-500/40')}
-          >
-            <div className='text-xs font-semibold mb-2'>Compact (table)</div>
-            <div className='space-y-1'>
-              <div className='h-2 rounded bg-zinc-200 dark:bg-zinc-700 w-5/6' />
-              <div className='h-2 rounded bg-zinc-200 dark:bg-zinc-700 w-4/6' />
-              <div className='h-2 rounded bg-zinc-200 dark:bg-zinc-700 w-5/6' />
-              <div className='h-2 rounded bg-zinc-200 dark:bg-zinc-700 w-3/6' />
-            </div>
-          </button>
-        </div>
+            </button>
+            <button
+              onClick={() => ui.set({ compactMode: true })}
+              className={cn('panel p-3 text-left', ui.compactMode && 'ring-2 ring-indigo-500/40')}
+            >
+              <div className='text-xs font-semibold mb-2'>Compact (table)</div>
+              <div className='space-y-1'>
+                <div className='h-2 rounded bg-zinc-200 dark:bg-zinc-700 w-5/6' />
+                <div className='h-2 rounded bg-zinc-200 dark:bg-zinc-700 w-4/6' />
+                <div className='h-2 rounded bg-zinc-200 dark:bg-zinc-700 w-5/6' />
+                <div className='h-2 rounded bg-zinc-200 dark:bg-zinc-700 w-3/6' />
+              </div>
+            </button>
+          </div>
+        )}
       </Card>
 
-      <Card>
-        <div className='text-sm font-semibold mb-3'>Keyboard shortcuts</div>
-        <div className='space-y-2 text-sm text-zinc-500'>
-          <div>⌘K — command palette</div>
-          <div>⌘N — quick add</div>
-          <div>⌘B — toggle sidebar</div>
-          <div>⌘D — duplicate selected task</div>
-          <div>Delete / Backspace — delete selected task or open project (with confirmation)</div>
-          <div>Drag & drop — reorder tasks, subtasks, and projects</div>
-        </div>
-      </Card>
-      <Card>
+      {!compact && (
+        <Card>
+          <div className='text-sm font-semibold mb-3'>Keyboard shortcuts</div>
+          <div className='space-y-2 text-sm text-zinc-500'>
+            <div>⌘K — command palette</div>
+            <div>⌘N — quick add</div>
+            <div>⌘B — toggle sidebar</div>
+            <div>⌘D — duplicate selected task</div>
+            <div>Delete / Backspace — delete selected task or open project (with confirmation)</div>
+            <div>Drag & drop — reorder tasks, subtasks, and projects</div>
+          </div>
+        </Card>
+      )}
+      <Card className={cn(compact && '!p-4')}>
         <div className='text-sm font-semibold mb-3'>Local data</div>
         <button className='btn btn-secondary' onClick={() => { localStorage.removeItem('orbit-data'); location.reload() }}>
           <Trash2 className='h-4 w-4' />Reset demo data
         </button>
       </Card>
     </div>
+  )
+}
+
+function SettingsPage() {
+  return (
+    <div className='p-6 max-w-3xl overflow-y-auto h-full'>
+      <SettingsContent />
+    </div>
+  )
+}
+
+/* ------------------------------------------------------------------
+   Quick Settings popup — a compact shortcut to the main Settings page.
+   Contains the exact same settings (via <SettingsContent compact />),
+   so every control here is fully synchronized with /settings.
+   ------------------------------------------------------------------ */
+function QuickSettingsPopup() {
+  const open = useUI(s => s.quickSettings)
+  const setUI = useUI(s => s.set)
+  const navigate = useNavigate()
+  useEffect(() => {
+    if (!open) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setUI({ quickSettings: false }) }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [open, setUI])
+  return (
+    <AnimatePresence>
+      {open && (
+        <>
+          <motion.div
+            className='popup-overlay'
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            onClick={() => setUI({ quickSettings: false })}
+          />
+          <motion.div
+            className='quick-settings-popup panel'
+            role='dialog'
+            aria-label='Quick settings'
+            initial={{ opacity: 0, y: -8, scale: 0.98 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: -8, scale: 0.98 }}
+            transition={{ type: 'spring', stiffness: 420, damping: 32 }}
+          >
+            <div className='flex items-center gap-2 p-4 border-b'>
+              <SlidersHorizontal className='h-4 w-4 text-zinc-500' />
+              <div className='text-sm font-semibold'>Quick settings</div>
+              <button
+                className='btn btn-ghost !h-8 !px-2 ml-auto'
+                onClick={() => { setUI({ quickSettings: false }); navigate('/settings') }}
+              >
+                <span className='text-xs'>All settings</span>
+                <ExternalLink className='h-3.5 w-3.5' />
+              </button>
+              <button className='btn btn-ghost !h-8 !px-2' onClick={() => setUI({ quickSettings: false })} aria-label='Close'>
+                <X className='h-4 w-4' />
+              </button>
+            </div>
+            <div className='p-4 overflow-y-auto scrollbar-thin quick-settings-body'>
+              <SettingsContent compact />
+            </div>
+          </motion.div>
+        </>
+      )}
+    </AnimatePresence>
   )
 }
 
@@ -2564,6 +2692,7 @@ function KanbanTaskCard({ task, onDragStart, onDragEnd }: { task: Task; onDragSt
   const navigate = useNavigate()
   const ctx = useContextMenu()
   const isMobileTaskCard = useMedia('(max-width: 768px)')
+  const dndEnabled = useDndEnabled()
   const [renaming, setRenaming] = useState(false)
   const [confirming, setConfirming] = useState(false)
   const tg = tags.filter(t => task.tags.includes(t.id))
@@ -2587,16 +2716,16 @@ function KanbanTaskCard({ task, onDragStart, onDragEnd }: { task: Task; onDragSt
   }
   return (
     <div
-      draggable
-      onDragStart={(e) => {
+      draggable={dndEnabled}
+      onDragStart={dndEnabled ? (e) => {
         e.dataTransfer.setData('text/plain', task.id)
         e.dataTransfer.effectAllowed = 'move'
         onDragStart(task.id)
-      }}
-      onDragEnd={onDragEnd}
+      } : undefined}
+      onDragEnd={dndEnabled ? onDragEnd : undefined}
       onContextMenu={isMobileTaskCard ? (e) => { e.preventDefault(); e.stopPropagation() } : openMenu}
       onClick={() => setUI({ selected: task.id, details: true })}
-      className='panel compact-card p-3 cursor-grab active:cursor-grabbing hover:shadow-sm transition'
+      className={cn('panel compact-card p-3 hover:shadow-sm transition', dndEnabled && 'cursor-grab active:cursor-grabbing')}
     >
       {ctx.node}
       {renaming && <NamePrompt title='Rename task' initial={task.title} label='Title' onClose={() => setRenaming(false)} onSave={(v) => updateTask(task.id, { title: v })} />}
@@ -3074,17 +3203,19 @@ function ProjectDocumentation({ project, onChange }: { project: Project; onChang
 
 // A single scheduled task chip that can be picked up and dragged.
 function MobileMonthEventChip({ task, onOpen }: { task: Task; onOpen: () => void }) {
+  const dndEnabled = useDndEnabled()
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
     id: `cal-event-${task.id}`,
     data: { taskId: task.id },
+    disabled: !dndEnabled,
   })
   const hex = priorityMeta[task.priority].hex
   const isDark = typeof document !== 'undefined' && document.documentElement.classList.contains('dark')
   return (
     <button
       ref={setNodeRef}
-      {...attributes}
-      {...listeners}
+      {...(dndEnabled ? attributes : {})}
+      {...(dndEnabled ? listeners : {})}
       type='button'
       // A tap (no drag) opens the task; the TouchSensor's activation delay
       // keeps taps and drags cleanly separated.
@@ -3232,6 +3363,7 @@ function CalendarPage() {
   const updateTask = useData(s => s.updateTask)
   const setUI = useUI(s => s.set)
   const calendarTarget = useUI(s => s.calendarTarget)
+  const dndEnabled = useDndEnabled()
   const isMobile = useMedia('(max-width: 768px)')
   // Default to day view on mobile; desktop stays on week. (Week IS available on
   // mobile now — we render a clean horizontally-scrollable week so the user
@@ -3382,22 +3514,24 @@ function CalendarPage() {
             onNavigate={setDate}
             views={['day', 'week', 'month', 'agenda']}
             selectable
-            resizable
+            resizable={dndEnabled}
+            draggableAccessor={() => dndEnabled}
+            resizableAccessor={() => dndEnabled}
             popup
-            dragFromOutsideItem={() => dragFromOutsideItem}
-            onDropFromOutside={({ start, end, allDay }: any) => {
+            dragFromOutsideItem={dndEnabled ? () => dragFromOutsideItem : undefined}
+            onDropFromOutside={dndEnabled ? ({ start, end, allDay }: any) => {
               const task = outsideTaskId ? taskMap.get(outsideTaskId) : null
               if (task) syncTaskToSlot(task, start, end, allDay)
               setOutsideTaskId(null)
-            }}
-            onEventDrop={({ event, start, end, allDay }: any) => {
+            } : undefined}
+            onEventDrop={dndEnabled ? ({ event, start, end, allDay }: any) => {
               const task = (event as Event & { resource: Task }).resource
               if (task) syncTaskToSlot(task, start, end, allDay)
-            }}
-            onEventResize={({ event, start, end }: any) => {
+            } : undefined}
+            onEventResize={dndEnabled ? ({ event, start, end }: any) => {
               const task = (event as Event & { resource: Task }).resource
               if (task) syncTaskToSlot(task, start, end, false)
-            }}
+            } : undefined}
             style={{ height: '100%' }}
             onSelectEvent={(e: Event & { resource: Task }) => setUI({ selected: e.resource.id, details: true })}
             onSelectSlot={(slot: { start: Date; end: Date; action?: string }) => {
@@ -3438,11 +3572,11 @@ function CalendarPage() {
             return (
               <div
                 key={task.id}
-                draggable
-                onDragStart={(e) => { e.dataTransfer.setData('text/plain', task.id); e.dataTransfer.effectAllowed = 'move'; setOutsideTaskId(task.id) }}
-                onDragEnd={() => setOutsideTaskId(null)}
+                draggable={dndEnabled}
+                onDragStart={dndEnabled ? (e) => { e.dataTransfer.setData('text/plain', task.id); e.dataTransfer.effectAllowed = 'move'; setOutsideTaskId(task.id) } : undefined}
+                onDragEnd={dndEnabled ? () => setOutsideTaskId(null) : undefined}
                 onClick={() => setUI({ selected: task.id, details: true })}
-                className={cn('panel p-3 cursor-grab active:cursor-grabbing hover:shadow-sm transition', isActive && 'ring-2 ring-indigo-500/30')}
+                className={cn('panel p-3 hover:shadow-sm transition', dndEnabled && 'cursor-grab active:cursor-grabbing', isActive && 'ring-2 ring-indigo-500/30')}
               >
                 <div className='flex items-start gap-2'>
                   <div className='min-w-0 flex-1'>
@@ -3497,11 +3631,11 @@ function CalendarPage() {
                     return (
                       <div
                         key={task.id}
-                        draggable
-                        onDragStart={(e) => { e.dataTransfer.setData('text/plain', task.id); e.dataTransfer.effectAllowed = 'move'; setOutsideTaskId(task.id) }}
-                        onDragEnd={() => { setOutsideTaskId(null); setMobileRailOpen(false) }}
+                        draggable={dndEnabled}
+                        onDragStart={dndEnabled ? (e) => { e.dataTransfer.setData('text/plain', task.id); e.dataTransfer.effectAllowed = 'move'; setOutsideTaskId(task.id) } : undefined}
+                        onDragEnd={dndEnabled ? () => { setOutsideTaskId(null); setMobileRailOpen(false) } : undefined}
                         onClick={() => { setUI({ selected: task.id, details: true }); setMobileRailOpen(false) }}
-                        className={cn('panel p-3 cursor-grab active:cursor-grabbing hover:shadow-sm transition', isActive && 'ring-2 ring-indigo-500/30')}
+                        className={cn('panel p-3 hover:shadow-sm transition', dndEnabled && 'cursor-grab active:cursor-grabbing', isActive && 'ring-2 ring-indigo-500/30')}
                       >
                         <div className='flex items-start gap-2'>
                           <div className='min-w-0 flex-1'>
@@ -4326,6 +4460,7 @@ function Layout() {
       <QuickAdd />
       <CommandPalette />
       <FiltersPanel />
+      <QuickSettingsPopup />
 
       {/* Keyboard-shortcut delete confirmation (Delete / Backspace on a
           selected task, or on the currently-viewed project). Reuses the
