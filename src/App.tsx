@@ -425,11 +425,29 @@ const applyTheme = (theme: 'light' | 'dark' | 'system') => {
    same criteria without the default "hide archived" guard, so the top-header
    filter (search / project / status / priority / tag / favorite) narrows every
    task view consistently. */
-const taskMatches = (t: Task, f: FilterState, opts?: { includeArchived?: boolean }) => {
+/* Does a task's OWN title / description contain the query text? */
+const matchesSearchText = (t: Task, q: string) =>
+  t.title.toLowerCase().includes(q) || (t.description || '').toLowerCase().includes(q)
+
+/* Does this task OR any of its descendants match the query text? Used so a
+   search that only hits a subtask still surfaces its parent (with the parent
+   rendered at reduced opacity to preserve the hierarchy — see below). */
+const searchHitsTaskOrDescendant = (t: Task, q: string, allTasks: Task[]): boolean => {
+  if (matchesSearchText(t, q)) return true
+  return allTasks.some(c => c.parentId === t.id && searchHitsTaskOrDescendant(c, q, allTasks))
+}
+
+const taskMatches = (t: Task, f: FilterState, opts?: { includeArchived?: boolean; allTasks?: Task[] }) => {
   if (t.archived && !opts?.includeArchived) return false
   if (f.search) {
     const q = f.search.toLowerCase()
-    if (!t.title.toLowerCase().includes(q) && !(t.description || '').toLowerCase().includes(q)) return false
+    // The search matches subtasks too: keep a parent visible when one of its
+    // descendants matches, even if the parent itself doesn't. When the task
+    // list isn't available fall back to the task's own text.
+    const hit = opts?.allTasks
+      ? searchHitsTaskOrDescendant(t, q, opts.allTasks)
+      : matchesSearchText(t, q)
+    if (!hit) return false
   }
   if (f.projectIds.length && !f.projectIds.includes(t.projectId || '')) return false
   if (f.statuses.length && !f.statuses.includes(t.status)) return false
@@ -437,6 +455,15 @@ const taskMatches = (t: Task, f: FilterState, opts?: { includeArchived?: boolean
   if (f.tags.length && !f.tags.some(x => t.tags.includes(x))) return false
   if (f.favoriteOnly && !t.favorite) return false
   return true
+}
+
+/* True when a task is shown ONLY because a descendant subtask matched the
+   active search (the task itself does not match). Such "context parent" rows
+   render at reduced opacity so the matching hierarchy stays readable. */
+const isSearchContextParent = (t: Task, f: FilterState, allTasks: Task[]) => {
+  if (!f.search) return false
+  const q = f.search.toLowerCase()
+  return !matchesSearchText(t, q) && searchHitsTaskOrDescendant(t, q, allTasks)
 }
 /* Legacy "smart" ordering: unfinished first, then priority, then due date.
    Used as the tie-breaker / fallback for every sort mode so results always
@@ -824,7 +851,19 @@ function Card({ children, className }: { children: React.ReactNode; className?: 
 
 function StatusDot({ status, onClick }: { status: Status; onClick?: () => void }) {
   const I = statusMeta[status].icon
-  return <button onClick={onClick} className='mt-0.5'><I className={cn('h-4 w-4', statusMeta[status].color)} /></button>
+  // Clicking the checkbox must only toggle the status — never bubble up to a
+  // parent handler (e.g. the task card body) that would open the details panel.
+  return (
+    <button
+      type='button'
+      onPointerDown={e => e.stopPropagation()}
+      onMouseDown={e => e.stopPropagation()}
+      onClick={e => { e.stopPropagation(); onClick?.() }}
+      className='mt-0.5'
+    >
+      <I className={cn('h-4 w-4', statusMeta[status].color)} />
+    </button>
+  )
 }
 
 /* ============================================================
@@ -869,6 +908,10 @@ function TaskRow({ task, showProject = true, depth = 0 }: { task: Task; showProj
   const p = projects.find(x => x.id === task.projectId)
   const ts = tags.filter(t => task.tags.includes(t.id))
   const isSelected = selected === task.id
+  const filters = useData(s => s.filters)
+  // When a search only matches a descendant subtask, this parent is shown just
+  // to preserve the hierarchy — render it dimmed so the real match stands out.
+  const isContextParent = isSearchContextParent(task, filters, allTasks)
   const ctx = useContextMenu()
   const isMobileTaskCard = useMedia('(max-width: 768px)')
   const dndEnabled = useDndEnabled()
@@ -989,7 +1032,7 @@ function TaskRow({ task, showProject = true, depth = 0 }: { task: Task; showProj
         ref={setNodeRef}
         {...rowDragAttributes}
         {...rowDragListeners}
-        className={cn('group panel p-3 task-row', dndEnabled && 'cursor-grab active:cursor-grabbing task-row-draggable', isSelected && 'is-selected', nestHighlight && 'task-row-nest-target')}
+        className={cn('group panel p-3 task-row', dndEnabled && 'cursor-grab active:cursor-grabbing task-row-draggable', isSelected && 'is-selected', nestHighlight && 'task-row-nest-target', isContextParent && 'task-row-search-context')}
         onClick={() => { if (longPressRef.current.fired) { longPressRef.current.fired = false; return } setUI({ selected: task.id, details: true }) }}
         onContextMenu={isMobileTaskCard ? (e) => { e.preventDefault(); e.stopPropagation() } : openMenu}
         onTouchStart={onTouchStart}
@@ -1853,7 +1896,8 @@ function Topbar() {
    ============================================================ */
 function Dashboard() {
   const f = useData(s => s.filters)
-  const tasks = useData(s => s.tasks).filter(t => taskMatches(t, f))
+  const allTasks = useData(s => s.tasks)
+  const tasks = allTasks.filter(t => taskMatches(t, f, { allTasks }))
   const projects = useData(s => s.projects)
   const compactMode = useUI(s => s.compactMode)
   const isMobile = useMedia('(max-width: 640px)')
@@ -2067,8 +2111,8 @@ function TodayPage() {
   const allTasks = useData(s => s.tasks)
   // Today = tasks dueing today (and not done). Overdue = tasks whose due date is
   // strictly before today and that are still open. Show BOTH groups on Today.
-  const todayTasks = sortTasks(allTasks.filter(t => taskMatches(t, f) && t.dueDate === todayStr))
-  const dueTasks = sortTasks(allTasks.filter(t => taskMatches(t, f) && overdue(t)))
+  const todayTasks = sortTasks(allTasks.filter(t => taskMatches(t, f, { allTasks }) && t.dueDate === todayStr))
+  const dueTasks = sortTasks(allTasks.filter(t => taskMatches(t, f, { allTasks }) && overdue(t)))
   return (
     <div className='p-6 space-y-6 overflow-y-auto h-full'>
       {dueTasks.length > 0 && (
@@ -2098,22 +2142,26 @@ function TodayPage() {
 }
 function UpcomingPage() {
   const f = useData(s => s.filters)
-  const tasks = sortTasks(useData(s => s.tasks).filter(t => taskMatches(t, f) && t.dueDate && t.dueDate >= todayStr))
+  const allTasks = useData(s => s.tasks)
+  const tasks = sortTasks(allTasks.filter(t => taskMatches(t, f, { allTasks }) && t.dueDate && t.dueDate >= todayStr))
   return <div className='p-6 overflow-y-auto h-full'><TaskList tasks={tasks} empty='Nothing upcoming' emptyDesc='No future tasks scheduled yet.' /></div>
 }
 function FavoritesPage() {
   const f = useData(s => s.filters)
-  const tasks = sortTasks(useData(s => s.tasks).filter(t => t.favorite && taskMatches(t, f)))
+  const allTasks = useData(s => s.tasks)
+  const tasks = sortTasks(allTasks.filter(t => t.favorite && taskMatches(t, f, { allTasks })))
   return <div className='p-6 overflow-y-auto h-full'><TaskList tasks={tasks} empty='No favorites yet' emptyDesc='Star tasks to find them faster.' /></div>
 }
 function CompletedPage() {
   const f = useData(s => s.filters)
-  const tasks = sortTasks(useData(s => s.tasks).filter(t => t.status === 'done' && taskMatches(t, f)))
+  const allTasks = useData(s => s.tasks)
+  const tasks = sortTasks(allTasks.filter(t => t.status === 'done' && taskMatches(t, f, { allTasks })))
   return <div className='p-6 overflow-y-auto h-full'><TaskList tasks={tasks} empty='Nothing completed yet' emptyDesc='Finished work will appear here.' /></div>
 }
 function ArchivePage() {
   const f = useData(s => s.filters)
-  const tasks = sortTasks(useData(s => s.tasks).filter(t => t.archived && taskMatches(t, f, { includeArchived: true })))
+  const allTasks = useData(s => s.tasks)
+  const tasks = sortTasks(allTasks.filter(t => t.archived && taskMatches(t, f, { includeArchived: true, allTasks })))
   return <div className='p-6 overflow-y-auto h-full'><TaskList tasks={tasks} empty='Archive is empty' emptyDesc='Archived tasks land here.' /></div>
 }
 
@@ -2147,7 +2195,7 @@ function AllTasksPage() {
   const filtered = useMemo(() => {
     // Apply the GLOBAL top-header filter first so it narrows this view too,
     // then layer the page's own local filters on top.
-    let list = allTasks.filter(t => taskMatches(t, globalFilter, { includeArchived: true }))
+    let list = allTasks.filter(t => taskMatches(t, globalFilter, { includeArchived: true, allTasks }))
     if (!includeArchived) list = list.filter(t => !t.archived)
     if (!includeDone) list = list.filter(t => t.status !== 'done')
     if (status !== 'all') list = list.filter(t => t.status === status)
@@ -2157,10 +2205,8 @@ function AllTasksPage() {
     if (favOnly) list = list.filter(t => t.favorite)
     if (query.trim()) {
       const q = query.trim().toLowerCase()
-      list = list.filter(t =>
-        t.title.toLowerCase().includes(q) ||
-        (t.description || '').toLowerCase().includes(q)
-      )
+      // Match subtasks too: keep a parent when any descendant matches.
+      list = list.filter(t => searchHitsTaskOrDescendant(t, q, allTasks))
     }
     list.sort((a, b) => compareBy(a, b, sortKey, sortDir))
     return list
@@ -2423,7 +2469,7 @@ function TagsPage() {
   const [confirmDel, setConfirmDel] = useState<Tag | null>(null)
   const [newName, setNewName] = useState('')
   const f = useData(s => s.filters)
-  const filtered = sortTasks(tasks.filter(t => (active ? t.tags.includes(active) : false) && taskMatches(t, f)))
+  const filtered = sortTasks(tasks.filter(t => (active ? t.tags.includes(active) : false) && taskMatches(t, f, { allTasks: tasks })))
 
   return (
     <div className='h-full flex flex-col'>
@@ -2930,7 +2976,7 @@ function ProjectPage() {
 
   if (!p) return <Navigate to='/projects' replace />
 
-  const projectTasks = sortTasks(data.tasks.filter(t => t.projectId === p.id && taskMatches(t, data.filters)))
+  const projectTasks = sortTasks(data.tasks.filter(t => t.projectId === p.id && taskMatches(t, data.filters, { allTasks: data.tasks })))
   const topLevelTasks = projectTasks.filter(t => !t.parentId)
   const kanbanGroups: { key: Status; label: string }[] = [
     { key: 'not_started', label: 'Not Started' },
@@ -3852,7 +3898,9 @@ function CalendarPage() {
       time: monthLike ? task.time : format(start, 'HH:mm'),
       status: task.status === 'done' ? 'planned' : task.status,
     })
-    setUI({ selected: task.id, details: true })
+    // NOTE: Dragging a task from the fixed side panel onto the calendar must
+    // NEVER open the task details panel — only schedule it. (Clicking a task in
+    // the panel still opens details via attachExistingToView / attachExistingTask.)
   }
 
   // react-big-calendar asks for a lightweight "event" to preview while dragging
@@ -4484,7 +4532,7 @@ function FiltersPanel() {
     <AnimatePresence>
       {ui.filters && (
         <>
-          <motion.div className='popup-overlay' initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => ui.set({ filters: false })} />
+          <motion.div className='popup-overlay filter-overlay' initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => ui.set({ filters: false })} />
           <motion.div
             className='filter-drawer'
             initial={{ x: '110%', opacity: 0.6 }}
