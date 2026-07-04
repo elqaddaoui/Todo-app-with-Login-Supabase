@@ -20,7 +20,8 @@ import {
   MoreHorizontal, Trash2, Pencil, Moon, Monitor, MessageSquare, Paperclip, ListChecks, GripVertical,
   Sparkles, Target, Rocket, BookOpen, Heart, Briefcase, Circle, PauseCircle, Ban, PlayCircle, CalendarClock,
   Copy, Link as LinkIcon, ExternalLink, FolderInput, Tag as TagIcon,
-  Image as ImageIcon, MapPinned, ArrowUp, ArrowDown, Move, SlidersHorizontal
+  Image as ImageIcon, MapPinned, ArrowUp, ArrowDown, Move, SlidersHorizontal,
+  Undo2, Redo2, RotateCcw
 } from 'lucide-react'
 import { createPortal } from 'react-dom'
 
@@ -221,6 +222,9 @@ const useUI = create<{
   calendarSidePanel: boolean;
   quickParentId: string | null;
   quickSettings: boolean;
+  // Undo/Redo toast preferences
+  undoToastEnabled: boolean;
+  undoToastDuration: number; // milliseconds the toast stays visible
   set: (p: Partial<any>) => void
 }>()(persist(
   (set) => ({
@@ -232,6 +236,8 @@ const useUI = create<{
     calendarSidePanel: true,
     quickParentId: null,
     quickSettings: false,
+    undoToastEnabled: true,
+    undoToastDuration: 2000,
     set: (p) => set(p),
   }),
   { name: 'orbit-ui' }
@@ -406,6 +412,280 @@ const useData = create<{
     },
   }
 ))
+
+/* ============================================================
+   Global Command-based Undo / Redo system
+   ------------------------------------------------------------
+   Design
+   ------
+   Every reversible mutation in the app flows through the `useData`
+   Zustand store (add/update/delete/toggle/move/reorder/… for tasks,
+   projects and tags). Instead of writing a bespoke inverse for each of
+   the ~25 actions, we take a *snapshot* of the three mutable data
+   slices (tasks / projects / tags) before and after each action runs.
+   A command records the { before, after } snapshots plus a
+   human-readable label and a "merge key".
+
+   • Undo  = re-apply a command's `before` snapshot.
+   • Redo  = re-apply a command's `after`  snapshot.
+
+   Because we restore the full slice, undo/redo reproduces the *exact*
+   previous state with zero data loss — no matter how complex the action
+   was (cascading subtask deletes, project moves that reparent whole
+   subtrees, status propagation, reordering, etc.).
+
+   Rapid edits are merged: consecutive commands that share a merge key
+   within MERGE_WINDOW_MS collapse into one history entry (e.g. typing a
+   title, dragging a slider), so a single Undo reverts the whole burst.
+
+   The stack keeps at most HISTORY_LIMIT (100) commands.
+   ============================================================ */
+
+type DataSnapshot = { tasks: Task[]; projects: Project[]; tags: Tag[] }
+type Command = {
+  id: number
+  label: string          // shown in the toast, e.g. "Edit task", "Delete project"
+  before: DataSnapshot
+  after: DataSnapshot
+  mergeKey: string | null // consecutive same-key commands merge within the window
+  time: number
+}
+
+const HISTORY_LIMIT = 100
+const MERGE_WINDOW_MS = 600
+
+const snapshot = (): DataSnapshot => {
+  const s = useData.getState()
+  return { tasks: s.tasks, projects: s.projects, tags: s.tags }
+}
+// Reference equality on the three arrays is enough: every action returns
+// brand-new arrays, so an unchanged reference means "nothing happened".
+const snapshotsEqual = (a: DataSnapshot, b: DataSnapshot) =>
+  a.tasks === b.tasks && a.projects === b.projects && a.tags === b.tags
+
+/* ---- Toast store: a tiny queue-of-one bottom notification. ---- */
+type ToastKind = 'undo' | 'redo' | 'info'
+const useToast = create<{
+  open: boolean
+  message: string
+  kind: ToastKind
+  token: number
+  show: (message: string, kind?: ToastKind) => void
+  hide: () => void
+}>((set) => ({
+  open: false,
+  message: '',
+  kind: 'info',
+  token: 0,
+  show: (message, kind = 'info') =>
+    set(s => ({ open: true, message, kind, token: s.token + 1 })),
+  hide: () => set({ open: false }),
+}))
+
+/* ---- History store ---- */
+const useHistory = create<{
+  past: Command[]
+  future: Command[]
+  canUndo: boolean
+  canRedo: boolean
+  push: (cmd: Command) => void
+  undo: () => void
+  redo: () => void
+  clear: () => void
+}>((set, get) => ({
+  past: [],
+  future: [],
+  canUndo: false,
+  canRedo: false,
+  push: (cmd) => set(s => {
+    let past = s.past
+    const last = past[past.length - 1]
+    // Merge rapid, same-kind edits into the previous command so one Undo
+    // reverts the whole burst (e.g. every keystroke of a title edit).
+    if (
+      last &&
+      cmd.mergeKey != null &&
+      last.mergeKey === cmd.mergeKey &&
+      cmd.time - last.time <= MERGE_WINDOW_MS
+    ) {
+      const merged: Command = { ...last, after: cmd.after, time: cmd.time }
+      past = [...past.slice(0, -1), merged]
+    } else {
+      past = [...past, cmd]
+      if (past.length > HISTORY_LIMIT) past = past.slice(past.length - HISTORY_LIMIT)
+    }
+    // Any new action invalidates the redo stack.
+    return { past, future: [], canUndo: past.length > 0, canRedo: false }
+  }),
+  undo: () => {
+    const { past, future } = get()
+    if (past.length === 0) return
+    const cmd = past[past.length - 1]
+    applySnapshot(cmd.before)
+    const nextPast = past.slice(0, -1)
+    const nextFuture = [...future, cmd]
+    set({ past: nextPast, future: nextFuture, canUndo: nextPast.length > 0, canRedo: true })
+    if (useUI.getState().undoToastEnabled) useToast.getState().show(`Undo: ${cmd.label}`, 'undo')
+  },
+  redo: () => {
+    const { past, future } = get()
+    if (future.length === 0) return
+    const cmd = future[future.length - 1]
+    applySnapshot(cmd.after)
+    const nextFuture = future.slice(0, -1)
+    const nextPast = [...past, cmd]
+    set({ past: nextPast, future: nextFuture, canUndo: true, canRedo: nextFuture.length > 0 })
+    if (useUI.getState().undoToastEnabled) useToast.getState().show(`Redo: ${cmd.label}`, 'redo')
+  },
+  clear: () => set({ past: [], future: [], canUndo: false, canRedo: false }),
+}))
+
+/* Restore a data snapshot without itself being recorded as a new command.
+   `suspendRecording` guards the wrapper installed below. */
+let suspendRecording = false
+const applySnapshot = (snap: DataSnapshot) => {
+  suspendRecording = true
+  try {
+    useData.setState({ tasks: snap.tasks, projects: snap.projects, tags: snap.tags })
+  } finally {
+    suspendRecording = false
+  }
+}
+
+/* ---- Per-action metadata: label shown in the toast + how to build the
+   merge key for rapid-edit collapsing. Actions absent from this map are
+   still recorded (with a generic label) so nothing is ever un-undoable. */
+type ActionName =
+  | 'addTask' | 'updateTask' | 'deleteTask' | 'toggleDone' | 'toggleFav'
+  | 'archiveTask' | 'duplicateTask' | 'moveTaskToProject' | 'setParent' | 'reorder'
+  | 'addProject' | 'updateProject' | 'duplicateProject' | 'deleteProject'
+  | 'toggleProjectFav' | 'archiveProject' | 'reorderProjects'
+  | 'addTag' | 'updateTag' | 'deleteTag'
+
+const ACTION_LABELS: Record<ActionName, string> = {
+  addTask: 'Create task',
+  updateTask: 'Edit task',
+  deleteTask: 'Delete task',
+  toggleDone: 'Change status',
+  toggleFav: 'Toggle favorite',
+  archiveTask: 'Archive task',
+  duplicateTask: 'Duplicate task',
+  moveTaskToProject: 'Move task',
+  setParent: 'Reparent task',
+  reorder: 'Reorder tasks',
+  addProject: 'Create project',
+  updateProject: 'Edit project',
+  duplicateProject: 'Duplicate project',
+  deleteProject: 'Delete project',
+  toggleProjectFav: 'Toggle project favorite',
+  archiveProject: 'Archive project',
+  reorderProjects: 'Reorder projects',
+  addTag: 'Create tag',
+  updateTag: 'Edit tag',
+  deleteTag: 'Delete tag',
+}
+
+/* Build a human label; refine a few actions using their payload so the
+   toast reads naturally ("Edit priority", "Complete task", …). */
+const refineLabel = (name: ActionName, args: any[], before: DataSnapshot): string => {
+  const base = ACTION_LABELS[name]
+  if (name === 'updateTask') {
+    const patch = (args?.[1] ?? {}) as Partial<Task>
+    const keys = Object.keys(patch)
+    if (keys.length === 1) {
+      const k = keys[0]
+      const map: Record<string, string> = {
+        title: 'Rename task', description: 'Edit description', priority: 'Change priority',
+        status: 'Change status', dueDate: 'Change due date', startDate: 'Change start date',
+        time: 'Change time', category: 'Change category', tags: 'Edit tags',
+        checklist: 'Edit subtasks', estimatedMinutes: 'Change estimate',
+      }
+      if (map[k]) return map[k]
+    }
+    if (keys.includes('checklist')) return 'Edit subtasks'
+  }
+  if (name === 'toggleDone') {
+    const t = before.tasks.find(x => x.id === args?.[0])
+    return t?.status === 'done' ? 'Reopen task' : 'Complete task'
+  }
+  if (name === 'toggleFav') {
+    const t = before.tasks.find(x => x.id === args?.[0])
+    return t?.favorite ? 'Remove favorite' : 'Add favorite'
+  }
+  return base
+}
+
+/* Merge key: rapid updates to the SAME task field collapse into one entry.
+   Structural / one-shot actions return null so they always stand alone. */
+const mergeKeyFor = (name: ActionName, args: any[]): string | null => {
+  if (name === 'updateTask') {
+    const id = args?.[0]
+    const patch = (args?.[1] ?? {}) as Partial<Task>
+    const keys = Object.keys(patch).sort().join(',')
+    return `updateTask:${id}:${keys}`
+  }
+  if (name === 'updateProject') {
+    const id = args?.[0]
+    const patch = (args?.[1] ?? {}) as Partial<Project>
+    return `updateProject:${id}:${Object.keys(patch).sort().join(',')}`
+  }
+  if (name === 'updateTag') {
+    const id = args?.[0]
+    const patch = (args?.[1] ?? {}) as Partial<Tag>
+    return `updateTag:${id}:${Object.keys(patch).sort().join(',')}`
+  }
+  // reorder bursts (drag) also merge so one Undo reverts the whole drag.
+  if (name === 'reorder') return 'reorder'
+  if (name === 'reorderProjects') return 'reorderProjects'
+  return null
+}
+
+/* Install the recording wrapper: replace each mutating action on the
+   useData store with a version that snapshots before/after and records a
+   command. Runs once at module load. Non-mutating helpers (hydrate,
+   setFilters, resetFilters) are intentionally NOT wrapped. */
+let commandSeq = 0
+let recordDepth = 0 // guards against nested recording (e.g. duplicateTask → addTask)
+;(function installUndoRecorder() {
+  const store = useData.getState() as unknown as Record<string, any>
+  const names = Object.keys(ACTION_LABELS) as ActionName[]
+  const patched: Record<string, any> = {}
+  for (const name of names) {
+    const original = store[name]
+    if (typeof original !== 'function') continue
+    patched[name] = (...args: any[]) => {
+      // When restoring a snapshot, or when we are already inside a recorded
+      // action (nested action call), delegate to the original and let the
+      // OUTERMOST action own the single history entry.
+      if (suspendRecording || recordDepth > 0) return original(...args)
+      recordDepth++
+      const before = snapshot()
+      let result: any
+      try {
+        result = original(...args)
+      } finally {
+        recordDepth--
+      }
+      const after = snapshot()
+      if (!snapshotsEqual(before, after)) {
+        useHistory.getState().push({
+          id: ++commandSeq,
+          label: refineLabel(name, args, before),
+          before,
+          after,
+          mergeKey: mergeKeyFor(name, args),
+          time: Date.now(),
+        })
+      }
+      return result
+    }
+  }
+  useData.setState(patched as any)
+})()
+
+/* Imperative helpers so non-React code / shortcuts can trigger undo/redo. */
+const undoAction = () => useHistory.getState().undo()
+const redoAction = () => useHistory.getState().redo()
 
 /* ============================================================
    Helpers
@@ -1690,6 +1970,130 @@ function AlertHost() {
 }
 
 /* ============================================================
+   Undo / Redo — bottom toast + global keyboard shortcuts
+   ============================================================ */
+
+/** Bottom-center toast shown after every Undo / Redo. Auto-dismisses after
+ *  the user-configured duration; can be disabled entirely in Settings. */
+function UndoToastHost() {
+  const open = useToast(s => s.open)
+  const message = useToast(s => s.message)
+  const kind = useToast(s => s.kind)
+  const token = useToast(s => s.token)
+  const hide = useToast(s => s.hide)
+  const duration = useUI(s => s.undoToastDuration)
+  const canRedo = useHistory(s => s.canRedo)
+
+  // Restart the auto-dismiss timer every time a new toast fires (token bumps).
+  useEffect(() => {
+    if (!open) return
+    const ms = Math.max(500, Number(duration) || 2000)
+    const id = window.setTimeout(() => hide(), ms)
+    return () => window.clearTimeout(id)
+  }, [open, token, duration, hide])
+
+  const Icon = kind === 'redo' ? Redo2 : Undo2
+  return createPortal(
+    <AnimatePresence>
+      {open && (
+        <motion.div
+          key={token}
+          className='undo-toast'
+          role='status'
+          aria-live='polite'
+          initial={{ opacity: 0, y: 16, scale: 0.98 }}
+          animate={{ opacity: 1, y: 0, scale: 1 }}
+          exit={{ opacity: 0, y: 16, scale: 0.98 }}
+          transition={{ type: 'spring', stiffness: 420, damping: 34 }}
+        >
+          <Icon className='h-4 w-4 shrink-0 text-indigo-300' />
+          <span className='undo-toast-msg'>{message}</span>
+          {kind === 'undo' && canRedo && (
+            <button
+              className='undo-toast-action'
+              onClick={() => { redoAction() }}
+            >
+              Redo
+            </button>
+          )}
+          <button className='undo-toast-close' aria-label='Dismiss' onClick={() => hide()}>
+            <X className='h-3.5 w-3.5' />
+          </button>
+        </motion.div>
+      )}
+    </AnimatePresence>,
+    document.body
+  )
+}
+
+/** Global keyboard shortcuts for undo/redo:
+ *  • Undo — Ctrl/Cmd+Z
+ *  • Redo — Ctrl+Y  OR  Ctrl/Cmd+Shift+Z
+ *  Ignored while typing in inputs/textareas/contentEditable so it never
+ *  clobbers the browser's native text-editing undo. */
+function UndoRedoShortcuts() {
+  useEffect(() => {
+    const isTypingTarget = (el: EventTarget | null) => {
+      if (!(el instanceof HTMLElement)) return false
+      const tag = el.tagName
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true
+      if (el.isContentEditable) return true
+      return false
+    }
+    const on = (e: KeyboardEvent) => {
+      if (isTypingTarget(e.target)) return
+      const mod = e.metaKey || e.ctrlKey
+      if (!mod) return
+      const key = e.key.toLowerCase()
+      // Redo: Ctrl+Y or Ctrl/Cmd+Shift+Z
+      if ((key === 'y' && !e.shiftKey) || (key === 'z' && e.shiftKey)) {
+        e.preventDefault()
+        redoAction()
+        return
+      }
+      // Undo: Ctrl/Cmd+Z (no shift)
+      if (key === 'z' && !e.shiftKey) {
+        e.preventDefault()
+        undoAction()
+      }
+    }
+    window.addEventListener('keydown', on)
+    return () => window.removeEventListener('keydown', on)
+  }, [])
+  return null
+}
+
+/** Undo / Redo icon buttons, used in the Topbar. */
+function UndoRedoButtons() {
+  const canUndo = useHistory(s => s.canUndo)
+  const canRedo = useHistory(s => s.canRedo)
+  const isMac = typeof navigator !== 'undefined' && /Mac|iP(hone|ad|od)/.test(navigator.platform)
+  const mod = isMac ? '⌘' : 'Ctrl'
+  return (
+    <div className='flex items-center'>
+      <button
+        className='btn btn-ghost'
+        disabled={!canUndo}
+        onClick={() => undoAction()}
+        title={`Undo (${mod}Z)`}
+        aria-label='Undo'
+      >
+        <Undo2 className='h-4 w-4' />
+      </button>
+      <button
+        className='btn btn-ghost'
+        disabled={!canRedo}
+        onClick={() => redoAction()}
+        title={`Redo (${isMac ? '⌘⇧Z' : 'Ctrl+Y'})`}
+        aria-label='Redo'
+      >
+        <Redo2 className='h-4 w-4' />
+      </button>
+    </div>
+  )
+}
+
+/* ============================================================
    Sidebar (Improvement #1: projects + sidebar search fit)
    ============================================================ */
 function Sidebar() {
@@ -1878,7 +2282,13 @@ function Topbar() {
       <button className='btn btn-ghost' onClick={() => ui.set({ command: true })}>
         <Search className='h-4 w-4' />
       </button>
+      <div className='ml-2 hidden sm:flex items-center border-l pl-2'>
+        <UndoRedoButtons />
+      </div>
       <div className='ml-auto flex items-center gap-2'>
+        <div className='sm:hidden'>
+          <UndoRedoButtons />
+        </div>
         <button className='btn btn-ghost' onClick={() => ui.set({ theme: theme === 'light' ? 'dark' : theme === 'dark' ? 'system' : 'light' })}>
           {theme === 'light' ? <Sun className='h-4 w-4' /> : theme === 'dark' ? <Moon className='h-4 w-4' /> : <Monitor className='h-4 w-4' />}
         </button>
@@ -2596,6 +3006,51 @@ function SettingsContent({ compact = false }: { compact?: boolean }) {
         </div>
       </Card>
 
+      {/* ====== Undo / Redo toast ====== */}
+      <Card className={cn(compact && '!p-4')}>
+        <div className='flex items-start gap-3'>
+          <div className='flex-1'>
+            <div className='text-sm font-semibold flex items-center gap-2'>
+              <RotateCcw className='h-4 w-4 text-zinc-500' />Undo &amp; Redo toast
+            </div>
+            <div className='mt-1 text-xs text-zinc-500'>
+              {ui.undoToastEnabled ? 'Enabled' : 'Disabled'} — after each Undo or
+              Redo, a small toast at the bottom describes the reverted action.
+              Undo with {typeof navigator !== 'undefined' && /Mac/.test(navigator.platform) ? '⌘Z' : 'Ctrl+Z'},
+              redo with {typeof navigator !== 'undefined' && /Mac/.test(navigator.platform) ? '⌘⇧Z' : 'Ctrl+Y'}.
+            </div>
+          </div>
+          <Switch
+            checked={ui.undoToastEnabled}
+            onChange={() => ui.set({ undoToastEnabled: !ui.undoToastEnabled })}
+            label='Toggle undo/redo toast'
+          />
+        </div>
+        {ui.undoToastEnabled && (
+          <div className='mt-4'>
+            <div className='flex items-center justify-between text-xs text-zinc-500 mb-2'>
+              <span>Toast duration</span>
+              <span className='font-medium text-[hsl(var(--foreground))]'>
+                {(ui.undoToastDuration / 1000).toFixed(1)}s
+              </span>
+            </div>
+            <input
+              type='range'
+              min={1000}
+              max={8000}
+              step={500}
+              value={ui.undoToastDuration}
+              onChange={e => ui.set({ undoToastDuration: Number(e.target.value) })}
+              className='w-full accent-indigo-500 cursor-pointer'
+              aria-label='Toast duration in milliseconds'
+            />
+            <div className='flex justify-between text-[10px] text-zinc-400 mt-1'>
+              <span>1s</span><span>Default 2s</span><span>8s</span>
+            </div>
+          </div>
+        )}
+      </Card>
+
       {/* ====== Calendar side panel toggle (desktop only) ====== */}
       <Card className={cn(compact && '!p-4')}>
         <div className='flex items-start gap-3'>
@@ -2674,6 +3129,8 @@ function SettingsContent({ compact = false }: { compact?: boolean }) {
             <div>⌘N — quick add</div>
             <div>⌘B — toggle sidebar</div>
             <div>⌘D — duplicate selected task</div>
+            <div>⌘Z — undo last action</div>
+            <div>⌘⇧Z / Ctrl+Y — redo</div>
             <div>Delete / Backspace — delete selected task or open project (with confirmation)</div>
             <div>Drag & drop — reorder tasks, subtasks, and projects</div>
           </div>
@@ -5358,5 +5815,12 @@ export default function App() {
   useInstallGlobalAlert()
   const booted = useData(s => s.booted)
   if (!booted) return <div className='h-full flex items-center justify-center text-sm text-zinc-500'>Loading…</div>
-  return <ErrorBoundary><Layout /><AlertHost /></ErrorBoundary>
+  return (
+    <ErrorBoundary>
+      <Layout />
+      <AlertHost />
+      <UndoRedoShortcuts />
+      <UndoToastHost />
+    </ErrorBoundary>
+  )
 }

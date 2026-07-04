@@ -3004,3 +3004,64 @@ body.is-dnd-dragging *{
   transition: outline-color .15s;
 }
 .existing-task-draggable{ user-select: none; }
+
+/* ============================================================
+   Undo / Redo bottom toast
+   ============================================================ */
+.undo-toast{
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  transform: translateX(-50%);
+  z-index: 90;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: min(92vw, 460px);
+  padding: 10px 12px 10px 14px;
+  border-radius: 14px;
+  background: hsl(222 20% 14%);
+  color: #f4f4f5;
+  box-shadow: 0 12px 32px rgba(0,0,0,.28), 0 2px 8px rgba(0,0,0,.2);
+  border: 1px solid rgba(255,255,255,.08);
+  font-size: 13px;
+  line-height: 1.2;
+}
+.dark .undo-toast{
+  background: hsl(220 16% 18%);
+  border-color: rgba(255,255,255,.1);
+}
+.undo-toast-msg{
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 500;
+}
+.undo-toast-action{
+  flex: 0 0 auto;
+  padding: 4px 10px;
+  border-radius: 9px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #c7d2fe;
+  background: rgba(129,140,248,.16);
+  transition: background .15s, color .15s;
+}
+.undo-toast-action:hover{ background: rgba(129,140,248,.28); color: #e0e7ff; }
+.undo-toast-close{
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 24px; width: 24px;
+  border-radius: 8px;
+  color: rgba(255,255,255,.6);
+  transition: background .15s, color .15s;
+}
+.undo-toast-close:hover{ background: rgba(255,255,255,.1); color: #fff; }
+
+@media (max-width: 480px){
+  .undo-toast{ bottom: 16px; max-width: 94vw; }
+}
