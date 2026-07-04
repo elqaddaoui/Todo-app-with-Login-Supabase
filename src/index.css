@@ -2806,3 +2806,148 @@ body.is-dnd-dragging *{
   .task-desc-toolbar{ overflow-x: auto; flex-wrap: nowrap; -webkit-overflow-scrolling: touch; }
   .task-desc-toolbar::-webkit-scrollbar{ display: none; }
 }
+
+/* ============================================================
+   Global Filters & Sort drawer — clean, modern, compact card.
+   Slides in from the right as a rounded card (not a full-bleed
+   panel). Shared visual language with the rest of the app.
+   ============================================================ */
+.filter-drawer{
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 60;
+  width: min(380px, 100vw);
+  padding: 12px;
+  display: flex;
+  pointer-events: none;
+}
+.filter-drawer > *{ pointer-events: auto; }
+.filter-card{
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  min-height: 0;
+  border-radius: 18px;
+  background: hsl(var(--card));
+  box-shadow: var(--shadow-lg), 0 0 0 1px hsl(var(--border));
+  overflow: hidden;
+}
+.dark .filter-card{
+  background: hsl(var(--surface-3));
+  box-shadow: var(--shadow-lg), 0 0 0 1px rgba(255,255,255,.06);
+}
+.filter-card-head{
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 14px 14px 12px;
+  border-bottom: 1px solid hsl(var(--border));
+}
+.filter-head-icon{
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 30px;
+  width: 30px;
+  border-radius: 10px;
+  background: hsl(var(--focus) / .12);
+  color: hsl(var(--focus));
+  flex: none;
+}
+.dark .filter-head-icon{ color: #cfe1ff; }
+.filter-card-body{
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.filter-section{ display: flex; flex-direction: column; gap: 8px; }
+.filter-section-label{
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  color: hsl(var(--muted-foreground));
+}
+.filter-chip-row{ display: flex; flex-wrap: wrap; gap: 6px; }
+
+/* Selectable pill — the single, consistent control for every filter/sort
+   choice in the panel. Clear on/off states. */
+.filter-pill{
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 11px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1;
+  cursor: pointer;
+  color: hsl(var(--muted-foreground));
+  background: hsl(var(--accent));
+  border: 1px solid transparent;
+  transition: background .14s, color .14s, border-color .14s, box-shadow .14s;
+  white-space: nowrap;
+}
+.filter-pill:hover{
+  color: hsl(var(--foreground));
+  background: hsl(var(--accent) / .8);
+}
+.filter-pill-on{
+  color: hsl(var(--focus));
+  background: hsl(var(--focus) / .12);
+  border-color: hsl(var(--focus) / .35);
+  box-shadow: 0 0 0 1px hsl(var(--focus) / .12) inset;
+}
+.filter-pill-on:hover{ background: hsl(var(--focus) / .18); }
+.dark .filter-pill{ background: rgba(255,255,255,.05); }
+.dark .filter-pill:hover{ background: rgba(255,255,255,.09); }
+.dark .filter-pill-on{ color: #cfe1ff; background: hsl(var(--focus) / .22); border-color: hsl(var(--focus) / .45); }
+
+/* Inline clear button inside the full-width search field */
+.filter-search-clear{
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 22px;
+  width: 22px;
+  border-radius: 999px;
+  color: hsl(var(--muted-foreground));
+  transition: background .14s, color .14s;
+}
+.filter-search-clear:hover{ background: hsl(var(--accent)); color: hsl(var(--foreground)); }
+
+.filter-card-foot{
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 14px;
+  border-top: 1px solid hsl(var(--border));
+  background: hsl(var(--card));
+}
+.dark .filter-card-foot{ background: hsl(var(--surface-3)); }
+
+/* Full-screen sheet on small viewports so the card is comfortable to tap. */
+@media (max-width: 480px){
+  .filter-drawer{ padding: 0; width: 100vw; }
+  .filter-card{ border-radius: 18px 18px 0 0; margin-top: auto; max-height: 92vh; }
+}
+
+/* Calendar highlights while a task is dragged in from the side panel. */
+.calendar-surface.calendar-drop-active{
+  outline: 2px dashed hsl(var(--focus) / .45);
+  outline-offset: -4px;
+  border-radius: 14px;
+  transition: outline-color .15s;
+}
+.existing-task-draggable{ user-select: none; }

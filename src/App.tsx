@@ -173,8 +173,21 @@ const parseNL = (txt: string) => {
 /* ============================================================
    Stores
    ============================================================ */
-type FilterState = { search: string; projectIds: string[]; statuses: Status[]; priorities: Priority[]; tags: string[]; favoriteOnly: boolean }
-const baseFilter: FilterState = { search: '', projectIds: [], statuses: [], priorities: [], tags: [], favoriteOnly: false }
+/* Global sort keys shared across the app. "selected" floats favorited tasks to
+   the top (a lightweight "pin what I care about" mode). */
+type SortKey = 'updated' | 'selected' | 'created' | 'due' | 'priority' | 'title'
+type SortDir = 'asc' | 'desc'
+type FilterState = { search: string; projectIds: string[]; statuses: Status[]; priorities: Priority[]; tags: string[]; favoriteOnly: boolean; sort: SortKey; sortDir: SortDir }
+const baseFilter: FilterState = { search: '', projectIds: [], statuses: [], priorities: [], tags: [], favoriteOnly: false, sort: 'updated', sortDir: 'desc' }
+
+const SORT_OPTIONS: { key: SortKey; label: string }[] = [
+  { key: 'updated', label: 'Updated' },
+  { key: 'selected', label: 'Selected' },
+  { key: 'created', label: 'Created' },
+  { key: 'due', label: 'Due Date' },
+  { key: 'priority', label: 'Priority' },
+  { key: 'title', label: 'Title' },
+]
 
 /* Walk up the parent chain starting at `startId`. Any ancestor whose status
    is 'done' is flipped back to 'in_progress' — because a completed parent
@@ -378,7 +391,20 @@ const useData = create<{
       tasks: s.tasks.map(t => ({ ...t, tags: t.tags.filter(tg => tg !== id) }))
     })),
   }),
-  { name: 'orbit-data', version: 3 }
+  {
+    name: 'orbit-data',
+    version: 3,
+    // Deep-merge persisted filters onto the current defaults so older saved
+    // state (which predates the `sort`/`sortDir` keys) always has every field.
+    merge: (persisted, current) => {
+      const p = (persisted ?? {}) as any
+      return {
+        ...current,
+        ...p,
+        filters: { ...baseFilter, ...(p.filters ?? {}) },
+      }
+    },
+  }
 ))
 
 /* ============================================================
@@ -412,14 +438,45 @@ const taskMatches = (t: Task, f: FilterState, opts?: { includeArchived?: boolean
   if (f.favoriteOnly && !t.favorite) return false
   return true
 }
-const sortTasks = (items: Task[]) => [...items].sort((a, b) => {
+/* Legacy "smart" ordering: unfinished first, then priority, then due date.
+   Used as the tie-breaker / fallback for every sort mode so results always
+   feel sensible. */
+const smartCompare = (a: Task, b: Task) => {
   if (a.status === 'done' && b.status !== 'done') return 1
   if (a.status !== 'done' && b.status === 'done') return -1
   const pr = priorityMeta[b.priority].rank - priorityMeta[a.priority].rank
   if (pr) return pr
   if (a.dueDate && b.dueDate) return a.dueDate.localeCompare(b.dueDate)
   return a.order - b.order
-})
+}
+
+/* Compare two tasks by an explicit sort key + direction. Ties fall back to the
+   smart ordering above so lists never look randomly shuffled. */
+const compareBy = (a: Task, b: Task, key: SortKey, dir: SortDir) => {
+  const mul = dir === 'asc' ? 1 : -1
+  let r = 0
+  switch (key) {
+    case 'title': r = a.title.localeCompare(b.title); break
+    case 'priority': r = priorityMeta[a.priority].rank - priorityMeta[b.priority].rank; break
+    case 'due': r = (a.dueDate || '\uffff').localeCompare(b.dueDate || '\uffff'); break
+    case 'created': r = (a.createdAt || '').localeCompare(b.createdAt || ''); break
+    case 'selected': r = (a.favorite ? 1 : 0) - (b.favorite ? 1 : 0); break
+    case 'updated':
+    default: r = (a.updatedAt || '').localeCompare(b.updatedAt || ''); break
+  }
+  if (r !== 0) return r * mul
+  return smartCompare(a, b)
+}
+
+/* App-wide task sorter. Honours the GLOBAL filter's sort key + direction so the
+   same ordering is applied consistently everywhere (Today, Upcoming, Projects,
+   All tasks, etc.). Falls back to smart ordering when no sort is configured. */
+const sortTasks = (items: Task[]) => {
+  const f = useData.getState().filters
+  const key = f.sort ?? 'updated'
+  const dir = f.sortDir ?? 'desc'
+  return [...items].sort((a, b) => compareBy(a, b, key, dir))
+}
 const overdue = (t: Task) => !!t.dueDate && t.status !== 'done' && t.status !== 'cancelled' && isPast(parseISO(t.dueDate)) && !isToday(parseISO(t.dueDate))
 const subTasks = (tasks: Task[], id: string) => tasks.filter(t => t.parentId === id)
 
@@ -3667,6 +3724,14 @@ function CalendarPage() {
   // Which step of the slot flow is showing: the New/Existing chooser, the
   // new-task name prompt, or the searchable existing-task picker.
   const [slotStep, setSlotStep] = useState<'choose' | 'new' | 'existing'>('choose')
+  // Desktop-only: the task currently being dragged out of the side panel onto
+  // the calendar. react-big-calendar's DnD addon reads this via
+  // `dragFromOutsideItem` to preview the drop, and `onDropFromOutside` uses it
+  // to schedule the task at the exact dropped slot. Held in a ref (as well as
+  // state) so the calendar's synchronous drop handler always sees the latest.
+  const [outsideDragId, setOutsideDragId] = useState<string | null>(null)
+  const outsideDragIdRef = useRef<string | null>(null)
+  const setOutsideDrag = (id: string | null) => { outsideDragIdRef.current = id; setOutsideDragId(id) }
 
   const events = useMemo(() => tasks.filter(t => t.dueDate && !t.archived).map(t => {
     const [y, m, dv] = t.dueDate!.split('-').map(Number)
@@ -3773,6 +3838,35 @@ function CalendarPage() {
     setUI({ selected: task.id, details: true })
   }
 
+  // Desktop drag-and-drop: a task dragged out of the side panel was dropped on
+  // a specific calendar slot. Schedule it to that exact date/time. Month view
+  // has no time component, so drop there becomes an all-day schedule.
+  const handleDropFromOutside = ({ start, allDay }: { start: Date; end?: Date; allDay?: boolean }) => {
+    const id = outsideDragIdRef.current
+    setOutsideDrag(null)
+    if (!id) return
+    const task = taskMap.get(id)
+    if (!task) return
+    const monthLike = view === Views.MONTH || allDay
+    updateTask(task.id, {
+      dueDate: format(start, 'yyyy-MM-dd'),
+      time: monthLike ? task.time : format(start, 'HH:mm'),
+      status: task.status === 'done' ? 'planned' : task.status,
+    })
+    setUI({ selected: task.id, details: true })
+  }
+
+  // react-big-calendar asks for a lightweight "event" to preview while dragging
+  // a task in from outside. We synthesize one from the dragged task so the
+  // ghost has a sensible title and duration.
+  const dragFromOutsideItem = () => {
+    const id = outsideDragIdRef.current
+    if (!id) return null
+    const task = taskMap.get(id)
+    if (!task) return null
+    return { title: task.title, start: new Date(), end: new Date(Date.now() + Math.max(task.estimatedMinutes || 60, 30) * 60000) }
+  }
+
   // View choices in the order users naturally read them (Day → Week → Month →
   // Agenda). Mobile gets the SAME set as desktop — the previous build dropped
   // Week entirely on mobile, which is what made it feel broken. Mobile-only
@@ -3812,7 +3906,7 @@ function CalendarPage() {
             </div>
           )}
         </div>
-        <div className={cn('calendar-surface min-h-0 flex-1', isMobile && 'calendar-surface-mobile', isMobile && `cal-view-${view}`)}>
+        <div className={cn('calendar-surface min-h-0 flex-1', isMobile && 'calendar-surface-mobile', isMobile && `cal-view-${view}`, outsideDragId && 'calendar-drop-active')}>
           {isMobile && view === Views.MONTH ? (
             /* Mobile-only month grid with touch drag-and-drop between day cells.
                Desktop and other mobile views are untouched below. */
@@ -3872,6 +3966,8 @@ function CalendarPage() {
               const task = (event as Event & { resource: Task }).resource
               if (task) syncTaskToSlot(task, start, end, false)
             } : undefined}
+            onDropFromOutside={showSidePanel && dndEnabled ? handleDropFromOutside : undefined}
+            dragFromOutsideItem={showSidePanel && dndEnabled ? dragFromOutsideItem : undefined}
             style={{ height: '100%' }}
             onSelectEvent={(e: Event & { resource: Task }) => setUI({ selected: e.resource.id, details: true })}
             onSelectSlot={(slot: { start: Date; end: Date; action?: string }) => {
@@ -3917,7 +4013,13 @@ function CalendarPage() {
               <X className='h-4 w-4' />
             </button>
           </div>
-          <ExistingTaskList tasks={tasks} onPick={attachExistingToView} />
+          <ExistingTaskList
+            tasks={tasks}
+            onPick={attachExistingToView}
+            draggable={dndEnabled}
+            onDragTask={setOutsideDrag}
+            onDragTaskEnd={() => setOutsideDrag(null)}
+          />
         </aside>
       )}
       {/* Slot chooser: after tapping a calendar slot, pick New or Existing task. */}
@@ -4013,14 +4115,22 @@ function SlotChoicePrompt({
 
 /* Shared searchable task list used by BOTH the modal ExistingTaskPicker and
    the desktop fixed calendar side panel. Keeps the exact same visual language
-   (search field + newest-first task cards) so the two surfaces stay in sync. */
+   (search field + newest-first task cards) so the two surfaces stay in sync.
+
+   `draggable` (desktop side-panel only) turns each card into a native HTML5
+   drag source. react-big-calendar's DnD addon listens to native drag/drop
+   events, so we advertise the dragged task id via dataTransfer AND via the
+   onDragTask callback (which the calendar reads through dragFromOutsideItem). */
 function ExistingTaskList({
-  tasks, onPick, autoFocus = false, className,
+  tasks, onPick, autoFocus = false, className, draggable = false, onDragTask, onDragTaskEnd,
 }: {
   tasks: Task[]
   onPick: (taskId: string) => void
   autoFocus?: boolean
   className?: string
+  draggable?: boolean
+  onDragTask?: (taskId: string) => void
+  onDragTaskEnd?: () => void
 }) {
   const [query, setQuery] = useState('')
   // Newest first: sort by createdAt descending (fall back to id order).
@@ -4038,6 +4148,11 @@ function ExistingTaskList({
           <Search className='search-field-icon' />
           <input autoFocus={autoFocus} value={query} onChange={e => setQuery(e.target.value)} className='search-field-input' placeholder='Search tasks…' aria-label='Search tasks' />
         </div>
+        {draggable && (
+          <div className='mt-2 text-[11px] text-zinc-400 flex items-center gap-1'>
+            <Move className='h-3 w-3' /> Drag a task onto the calendar, or click to schedule.
+          </div>
+        )}
       </div>
       <div className='min-h-0 flex-1 overflow-y-auto p-3 space-y-2 scrollbar-thin'>
         {results.length === 0 && <Empty title='No tasks found' desc='Try a different search, or create a new task.' icon={ListChecks} />}
@@ -4045,14 +4160,32 @@ function ExistingTaskList({
           <button
             key={task.id}
             type='button'
+            draggable={draggable}
+            onDragStart={draggable ? (e) => {
+              // Native HTML5 drag payload — react-big-calendar's DnD addon
+              // fires on native `dragover`/`drop`, so we also flag the task via
+              // the callback so the calendar's dragFromOutsideItem can read it.
+              e.dataTransfer.effectAllowed = 'move'
+              try { e.dataTransfer.setData('text/plain', task.id) } catch { /* older browsers */ }
+              onDragTask?.(task.id)
+            } : undefined}
+            onDragEnd={draggable ? () => onDragTaskEnd?.() : undefined}
             onClick={() => onPick(task.id)}
-            className='panel p-3 w-full text-left hover:shadow-sm transition hover:ring-2 hover:ring-indigo-500/30'
+            className={cn(
+              'panel p-3 w-full text-left hover:shadow-sm transition hover:ring-2 hover:ring-indigo-500/30',
+              draggable && 'existing-task-draggable cursor-grab active:cursor-grabbing',
+            )}
           >
-            <div className='text-sm font-medium truncate'>{task.title}</div>
-            <div className='mt-1 flex flex-wrap items-center gap-2 text-[11px] text-zinc-500'>
-              {statusBadge(task.status)}
-              {priorityBadge(task.priority, 'compact-meta compact-meta-priority')}
-              {task.dueDate && <span className='inline-flex items-center gap-1'><CalendarDays className='h-3 w-3' />{format(parseISO(task.dueDate), 'MMM d')}{task.time && ` · ${task.time}`}</span>}
+            <div className='flex items-start gap-2'>
+              {draggable && <GripVertical className='h-3.5 w-3.5 mt-0.5 shrink-0 text-zinc-400' aria-hidden='true' />}
+              <div className='min-w-0 flex-1'>
+                <div className='text-sm font-medium truncate'>{task.title}</div>
+                <div className='mt-1 flex flex-wrap items-center gap-2 text-[11px] text-zinc-500'>
+                  {statusBadge(task.status)}
+                  {priorityBadge(task.priority, 'compact-meta compact-meta-priority')}
+                  {task.dueDate && <span className='inline-flex items-center gap-1'><CalendarDays className='h-3 w-3' />{format(parseISO(task.dueDate), 'MMM d')}{task.time && ` · ${task.time}`}</span>}
+                </div>
+              </div>
             </div>
           </button>
         ))}
@@ -4254,58 +4387,206 @@ function CommandPalette() {
   )
 }
 
+/* Global task filter + sort. Redesigned as a clean, modern, compact rounded
+   card that slides in from the right. Everything applies INSTANTLY (no Apply
+   button) and the same filter/sort state drives task lists across the whole
+   app for full consistency. */
 function FiltersPanel() {
   const ui = useUI()
   const data = useData()
   const f = data.filters
+
+  // Count of active constraints (search + any selected chip). Sort is not
+  // counted here since a sort is always applied.
+  const activeCount =
+    (f.search.trim() ? 1 : 0) +
+    (f.favoriteOnly ? 1 : 0) +
+    f.statuses.length + f.priorities.length + f.projectIds.length + f.tags.length
+
+  const toggle = <T,>(arr: T[], v: T): T[] => arr.includes(v) ? arr.filter(x => x !== v) : [...arr, v]
+
   return (
     <AnimatePresence>
       {ui.filters && (
         <>
           <motion.div className='popup-overlay' initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => ui.set({ filters: false })} />
-          <motion.div className='fixed right-0 top-0 bottom-0 w-[360px] max-w-[100vw] panel rounded-none z-50 p-4 overflow-y-auto' initial={{ x: '100%' }} animate={{ x: 0 }} exit={{ x: '100%' }}>
-            <div className='flex items-center mb-4'>
-              <div className='text-sm font-semibold'>Filters</div>
-              <button className='ml-auto btn btn-ghost' onClick={() => ui.set({ filters: false })}><X className='h-4 w-4' /></button>
-            </div>
-            <div className='space-y-4 text-sm'>
-              <div>
-                <div className='mb-2 text-[11px] uppercase tracking-wider text-zinc-500'>Favorites</div>
-                <label className='flex items-center gap-2'>
-                  <input type='checkbox' checked={f.favoriteOnly} onChange={e => data.setFilters({ favoriteOnly: e.target.checked })} /> Favorited only
-                </label>
-              </div>
-              <div>
-                <div className='mb-2 text-[11px] uppercase tracking-wider text-zinc-500'>Status</div>
-                <div className='flex flex-wrap gap-2'>
-                  {(Object.keys(statusMeta) as Status[]).map(s => (
-                    <button key={s} className={cn('badge', f.statuses.includes(s) ? 'bg-zinc-200 dark:bg-zinc-700' : 'bg-black/5 dark:bg-white/5')} onClick={() => data.setFilters({ statuses: f.statuses.includes(s) ? f.statuses.filter(x => x !== s) : [...f.statuses, s] })}>
-                      {statusMeta[s].label}
-                    </button>
-                  ))}
+          <motion.div
+            className='filter-drawer'
+            initial={{ x: '110%', opacity: 0.6 }}
+            animate={{ x: 0, opacity: 1 }}
+            exit={{ x: '110%', opacity: 0.6 }}
+            transition={{ type: 'spring', stiffness: 420, damping: 40 }}
+            role='dialog'
+            aria-label='Filter and sort tasks'
+          >
+            <div className='filter-card'>
+              {/* Header */}
+              <div className='filter-card-head'>
+                <div className='flex items-center gap-2 min-w-0'>
+                  <span className='filter-head-icon'><SlidersHorizontal className='h-4 w-4' /></span>
+                  <div className='min-w-0'>
+                    <div className='text-sm font-semibold leading-tight'>Filters &amp; Sort</div>
+                    <div className='text-[11px] text-zinc-500 leading-tight'>
+                      {activeCount > 0 ? `${activeCount} active` : 'Changes apply instantly'}
+                    </div>
+                  </div>
+                </div>
+                <div className='flex items-center gap-1'>
+                  {activeCount > 0 && (
+                    <button className='btn btn-ghost !h-8 !px-2 text-xs' onClick={() => data.resetFilters()}>Reset</button>
+                  )}
+                  <button className='btn btn-ghost !h-8 !w-8 !px-0 inline-flex items-center justify-center' onClick={() => ui.set({ filters: false })} aria-label='Close'>
+                    <X className='h-4 w-4' />
+                  </button>
                 </div>
               </div>
-              <div>
-                <div className='mb-2 text-[11px] uppercase tracking-wider text-zinc-500'>Priority</div>
-                <div className='flex flex-wrap gap-2'>
-                  {(Object.keys(priorityMeta) as Priority[]).map(p => (
-                    <button key={p} className={cn('badge', f.priorities.includes(p) ? 'bg-zinc-200 dark:bg-zinc-700' : 'bg-black/5 dark:bg-white/5')} onClick={() => data.setFilters({ priorities: f.priorities.includes(p) ? f.priorities.filter(x => x !== p) : [...f.priorities, p] })}>
-                      {priorityMeta[p].label}
+
+              {/* Body */}
+              <div className='filter-card-body'>
+                {/* Full-width search bar */}
+                <div className='search-field w-full'>
+                  <Search className='search-field-icon' />
+                  <input
+                    value={f.search}
+                    onChange={e => data.setFilters({ search: e.target.value })}
+                    className='search-field-input'
+                    placeholder='Search tasks…'
+                    aria-label='Search tasks'
+                  />
+                  {f.search && (
+                    <button className='filter-search-clear' onClick={() => data.setFilters({ search: '' })} aria-label='Clear search'>
+                      <X className='h-3.5 w-3.5' />
                     </button>
-                  ))}
+                  )}
                 </div>
-              </div>
-              <div>
-                <div className='mb-2 text-[11px] uppercase tracking-wider text-zinc-500'>Projects</div>
-                <div className='flex flex-wrap gap-2'>
-                  {data.projects.map(p => (
-                    <button key={p.id} className={cn('badge', f.projectIds.includes(p.id) ? 'bg-zinc-200 dark:bg-zinc-700' : 'bg-black/5 dark:bg-white/5')} onClick={() => data.setFilters({ projectIds: f.projectIds.includes(p.id) ? f.projectIds.filter(x => x !== p.id) : [...f.projectIds, p.id] })}>
-                      <span className='h-1.5 w-1.5 rounded-full' style={{ background: p.color }} /> {p.name}
+
+                {/* Sort */}
+                <section className='filter-section'>
+                  <div className='filter-section-label'>Sort by</div>
+                  <div className='filter-chip-row'>
+                    {SORT_OPTIONS.map(o => (
+                      <button
+                        key={o.key}
+                        className={cn('filter-pill', f.sort === o.key && 'filter-pill-on')}
+                        aria-pressed={f.sort === o.key}
+                        onClick={() => data.setFilters({ sort: o.key })}
+                      >
+                        {o.label}
+                      </button>
+                    ))}
+                  </div>
+                  <div className='mt-2 flex items-center gap-1.5'>
+                    <button
+                      className={cn('filter-pill flex-1 justify-center', f.sortDir === 'desc' && 'filter-pill-on')}
+                      aria-pressed={f.sortDir === 'desc'}
+                      onClick={() => data.setFilters({ sortDir: 'desc' })}
+                    >
+                      <ArrowDown className='h-3.5 w-3.5' /> Descending
                     </button>
-                  ))}
-                </div>
+                    <button
+                      className={cn('filter-pill flex-1 justify-center', f.sortDir === 'asc' && 'filter-pill-on')}
+                      aria-pressed={f.sortDir === 'asc'}
+                      onClick={() => data.setFilters({ sortDir: 'asc' })}
+                    >
+                      <ArrowUp className='h-3.5 w-3.5' /> Ascending
+                    </button>
+                  </div>
+                </section>
+
+                {/* Favorites */}
+                <section className='filter-section'>
+                  <div className='filter-section-label'>Favorites</div>
+                  <button
+                    className={cn('filter-pill', f.favoriteOnly && 'filter-pill-on')}
+                    aria-pressed={f.favoriteOnly}
+                    onClick={() => data.setFilters({ favoriteOnly: !f.favoriteOnly })}
+                  >
+                    <Star className={cn('h-3.5 w-3.5', f.favoriteOnly && 'fill-current')} /> Favorited only
+                  </button>
+                </section>
+
+                {/* Status */}
+                <section className='filter-section'>
+                  <div className='filter-section-label'>Status</div>
+                  <div className='filter-chip-row'>
+                    {(Object.keys(statusMeta) as Status[]).map(s => (
+                      <button
+                        key={s}
+                        className={cn('filter-pill', f.statuses.includes(s) && 'filter-pill-on')}
+                        aria-pressed={f.statuses.includes(s)}
+                        onClick={() => data.setFilters({ statuses: toggle(f.statuses, s) })}
+                      >
+                        <span className={cn('h-1.5 w-1.5 rounded-full', statusMeta[s].dot)} /> {statusMeta[s].label}
+                      </button>
+                    ))}
+                  </div>
+                </section>
+
+                {/* Priority */}
+                <section className='filter-section'>
+                  <div className='filter-section-label'>Priority</div>
+                  <div className='filter-chip-row'>
+                    {(Object.keys(priorityMeta) as Priority[]).map(p => (
+                      <button
+                        key={p}
+                        className={cn('filter-pill', f.priorities.includes(p) && 'filter-pill-on')}
+                        aria-pressed={f.priorities.includes(p)}
+                        onClick={() => data.setFilters({ priorities: toggle(f.priorities, p) })}
+                      >
+                        <span className='h-1.5 w-1.5 rounded-full' style={{ background: priorityMeta[p].hex }} /> {priorityMeta[p].label}
+                      </button>
+                    ))}
+                  </div>
+                </section>
+
+                {/* Projects */}
+                {data.projects.length > 0 && (
+                  <section className='filter-section'>
+                    <div className='filter-section-label'>Projects</div>
+                    <div className='filter-chip-row'>
+                      {data.projects.map(p => (
+                        <button
+                          key={p.id}
+                          className={cn('filter-pill', f.projectIds.includes(p.id) && 'filter-pill-on')}
+                          aria-pressed={f.projectIds.includes(p.id)}
+                          onClick={() => data.setFilters({ projectIds: toggle(f.projectIds, p.id) })}
+                        >
+                          <span className='h-2 w-2 rounded-full' style={{ background: p.color }} /> {p.name}
+                        </button>
+                      ))}
+                    </div>
+                  </section>
+                )}
+
+                {/* Tags */}
+                {data.tags.length > 0 && (
+                  <section className='filter-section'>
+                    <div className='filter-section-label'>Tags</div>
+                    <div className='filter-chip-row'>
+                      {data.tags.map(t => (
+                        <button
+                          key={t.id}
+                          className={cn('filter-pill', f.tags.includes(t.id) && 'filter-pill-on')}
+                          aria-pressed={f.tags.includes(t.id)}
+                          onClick={() => data.setFilters({ tags: toggle(f.tags, t.id) })}
+                        >
+                          <span className='h-2 w-2 rounded-full' style={{ background: t.color }} /> {t.name}
+                        </button>
+                      ))}
+                    </div>
+                  </section>
+                )}
               </div>
-              <button className='btn btn-secondary w-full justify-center' onClick={() => data.resetFilters()}>Reset filters</button>
+
+              {/* Footer */}
+              <div className='filter-card-foot'>
+                <button className='btn btn-ghost !h-9 text-xs' onClick={() => data.resetFilters()} disabled={activeCount === 0}>
+                  Clear all
+                </button>
+                <button className='btn btn-primary !h-9 text-xs flex-1 justify-center' onClick={() => ui.set({ filters: false })}>
+                  Done
+                </button>
+              </div>
             </div>
           </motion.div>
         </>
