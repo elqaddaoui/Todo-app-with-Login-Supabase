@@ -3864,7 +3864,16 @@ function CalendarPage() {
     if (!id) return null
     const task = taskMap.get(id)
     if (!task) return null
-    return { title: task.title, start: new Date(), end: new Date(Date.now() + Math.max(task.estimatedMinutes || 60, 30) * 60000) }
+    // Return a fully-formed calendar event (same shape as `events` above),
+    // including `resource: task`. react-big-calendar renders this preview via
+    // the same TimeGridEvent path as real events — which calls eventPropGetter
+    // and reads `resource`. Omitting `resource` made the preview crash the view.
+    return {
+      title: task.title,
+      start: new Date(),
+      end: new Date(Date.now() + Math.max(task.estimatedMinutes || 60, 30) * 60000),
+      resource: task,
+    } as Event & { resource: Task }
   }
 
   // View choices in the order users naturally read them (Day → Week → Month →
@@ -3974,9 +3983,14 @@ function CalendarPage() {
               // Open the New/Existing chooser popup for the tapped slot.
               openSlotChooser(slot.start, slot.end, view)
             }}
-            eventPropGetter={(e: Event & { resource: Task }) => {
-              const task = e.resource as Task
-              const hex = priorityMeta[task.priority].hex
+            eventPropGetter={(e: Event & { resource?: Task }) => {
+              // `resource` can be missing for transient events (e.g. the drag
+              // preview react-big-calendar synthesizes while dropping a task in
+              // from the side panel). Fall back to a safe priority so this
+              // getter never throws and takes down the whole calendar view.
+              const task = e.resource as Task | undefined
+              const meta = task ? priorityMeta[task.priority] : undefined
+              const hex = (meta ?? priorityMeta.medium).hex
               const isDark = typeof document !== 'undefined' && document.documentElement.classList.contains('dark')
               return {
                 style: {
