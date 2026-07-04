@@ -205,6 +205,7 @@ const useUI = create<{
   theme: 'light' | 'dark' | 'system'; sidebarW: number; detailsW: number;
   compactMode: boolean;
   dndEnabled: boolean;
+  calendarSidePanel: boolean;
   quickParentId: string | null;
   quickSettings: boolean;
   set: (p: Partial<any>) => void
@@ -215,6 +216,7 @@ const useUI = create<{
     theme: 'system', sidebarW: 280, detailsW: 380,
     compactMode: false,
     dndEnabled: true,
+    calendarSidePanel: true,
     quickParentId: null,
     quickSettings: false,
     set: (p) => set(p),
@@ -393,8 +395,12 @@ const applyTheme = (theme: 'light' | 'dark' | 'system') => {
   const mode = theme === 'system' ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light') : theme
   root.classList.remove('light', 'dark'); root.classList.add(mode); root.style.colorScheme = mode
 }
-const taskMatches = (t: Task, f: FilterState) => {
-  if (t.archived) return false
+/* Global filter matcher. `includeArchived` lets archive-scoped views run the
+   same criteria without the default "hide archived" guard, so the top-header
+   filter (search / project / status / priority / tag / favorite) narrows every
+   task view consistently. */
+const taskMatches = (t: Task, f: FilterState, opts?: { includeArchived?: boolean }) => {
+  if (t.archived && !opts?.includeArchived) return false
   if (f.search) {
     const q = f.search.toLowerCase()
     if (!t.title.toLowerCase().includes(q) && !(t.description || '').toLowerCase().includes(q)) return false
@@ -1789,7 +1795,8 @@ function Topbar() {
    Pages
    ============================================================ */
 function Dashboard() {
-  const tasks = useData(s => s.tasks).filter(t => !t.archived)
+  const f = useData(s => s.filters)
+  const tasks = useData(s => s.tasks).filter(t => taskMatches(t, f))
   const projects = useData(s => s.projects)
   const compactMode = useUI(s => s.compactMode)
   const isMobile = useMedia('(max-width: 640px)')
@@ -2038,15 +2045,18 @@ function UpcomingPage() {
   return <div className='p-6 overflow-y-auto h-full'><TaskList tasks={tasks} empty='Nothing upcoming' emptyDesc='No future tasks scheduled yet.' /></div>
 }
 function FavoritesPage() {
-  const tasks = sortTasks(useData(s => s.tasks).filter(t => t.favorite && !t.archived))
+  const f = useData(s => s.filters)
+  const tasks = sortTasks(useData(s => s.tasks).filter(t => t.favorite && taskMatches(t, f)))
   return <div className='p-6 overflow-y-auto h-full'><TaskList tasks={tasks} empty='No favorites yet' emptyDesc='Star tasks to find them faster.' /></div>
 }
 function CompletedPage() {
-  const tasks = sortTasks(useData(s => s.tasks).filter(t => t.status === 'done' && !t.archived))
+  const f = useData(s => s.filters)
+  const tasks = sortTasks(useData(s => s.tasks).filter(t => t.status === 'done' && taskMatches(t, f)))
   return <div className='p-6 overflow-y-auto h-full'><TaskList tasks={tasks} empty='Nothing completed yet' emptyDesc='Finished work will appear here.' /></div>
 }
 function ArchivePage() {
-  const tasks = sortTasks(useData(s => s.tasks).filter(t => t.archived))
+  const f = useData(s => s.filters)
+  const tasks = sortTasks(useData(s => s.tasks).filter(t => t.archived && taskMatches(t, f, { includeArchived: true })))
   return <div className='p-6 overflow-y-auto h-full'><TaskList tasks={tasks} empty='Archive is empty' emptyDesc='Archived tasks land here.' /></div>
 }
 
@@ -2057,6 +2067,7 @@ function AllTasksPage() {
   const allTasks = useData(s => s.tasks)
   const projects = useData(s => s.projects)
   const tags = useData(s => s.tags)
+  const globalFilter = useData(s => s.filters)
 
   type SortKey = 'created' | 'updated' | 'due' | 'priority' | 'title'
   const [query, setQuery] = useState('')
@@ -2072,7 +2083,9 @@ function AllTasksPage() {
   const [showFilters, setShowFilters] = useState(false)
 
   const filtered = useMemo(() => {
-    let list = allTasks.slice()
+    // Apply the GLOBAL top-header filter first so it narrows this view too,
+    // then layer the page's own local filters on top.
+    let list = allTasks.filter(t => taskMatches(t, globalFilter, { includeArchived: true }))
     if (!includeArchived) list = list.filter(t => !t.archived)
     if (!includeDone) list = list.filter(t => t.status !== 'done')
     if (status !== 'all') list = list.filter(t => t.status === status)
@@ -2101,7 +2114,7 @@ function AllTasksPage() {
       return r * dir
     })
     return list
-  }, [allTasks, includeArchived, includeDone, status, priority, projectId, tagId, favOnly, query, sortKey, sortDir])
+  }, [allTasks, globalFilter, includeArchived, includeDone, status, priority, projectId, tagId, favOnly, query, sortKey, sortDir])
 
   const total = allTasks.filter(t => !t.archived).length
   const archivedCount = allTasks.filter(t => t.archived).length
@@ -2298,9 +2311,11 @@ function AllTasksPage() {
                 <Archive className='h-3 w-3' /> Archived
               </label>
             </div>
-            <div className='flex justify-between pt-1'>
+            {/* No Apply/Done button — filters apply in real time as you change
+                them. Only a "Clear all" affordance remains. */}
+            <div className='flex items-center justify-between pt-1'>
+              <span className='text-[10px] text-zinc-400'>Changes apply instantly</span>
               <button className='btn btn-ghost !h-8 text-xs' onClick={resetFilters} disabled={activeFilterCount === 0}>Clear all</button>
-              <button className='btn btn-primary !h-8 text-xs' onClick={() => setShowFilters(false)}>Done</button>
             </div>
           </div>
         </div>,
@@ -2356,7 +2371,8 @@ function TagsPage() {
   const [active, setActive] = useState(tags[0]?.id || '')
   const [confirmDel, setConfirmDel] = useState<Tag | null>(null)
   const [newName, setNewName] = useState('')
-  const filtered = sortTasks(tasks.filter(t => active ? t.tags.includes(active) : false))
+  const f = useData(s => s.filters)
+  const filtered = sortTasks(tasks.filter(t => (active ? t.tags.includes(active) : false) && taskMatches(t, f)))
 
   return (
     <div className='h-full flex flex-col'>
@@ -2479,6 +2495,27 @@ function SettingsContent({ compact = false }: { compact?: boolean }) {
             checked={ui.dndEnabled}
             onChange={() => ui.set({ dndEnabled: !ui.dndEnabled })}
             label='Enable or disable drag and drop'
+          />
+        </div>
+      </Card>
+
+      {/* ====== Calendar side panel toggle (desktop only) ====== */}
+      <Card className={cn(compact && '!p-4')}>
+        <div className='flex items-start gap-3'>
+          <div className='flex-1'>
+            <div className='text-sm font-semibold flex items-center gap-2'>
+              <CalendarDays className='h-4 w-4 text-zinc-500' />Calendar side panel
+            </div>
+            <div className='mt-1 text-xs text-zinc-500'>
+              {ui.calendarSidePanel ? 'Enabled' : 'Disabled'} — shows a fixed
+              "Select existing task" panel on the right of the calendar (desktop
+              only). Pick a task to schedule it onto the day you're viewing.
+            </div>
+          </div>
+          <Switch
+            checked={ui.calendarSidePanel}
+            onChange={() => ui.set({ calendarSidePanel: !ui.calendarSidePanel })}
+            label='Toggle calendar side panel'
           />
         </div>
       </Card>
@@ -2842,7 +2879,7 @@ function ProjectPage() {
 
   if (!p) return <Navigate to='/projects' replace />
 
-  const projectTasks = sortTasks(data.tasks.filter(t => t.projectId === p.id && !t.archived))
+  const projectTasks = sortTasks(data.tasks.filter(t => t.projectId === p.id && taskMatches(t, data.filters)))
   const topLevelTasks = projectTasks.filter(t => !t.parentId)
   const kanbanGroups: { key: Status; label: string }[] = [
     { key: 'not_started', label: 'Not Started' },
@@ -3613,8 +3650,12 @@ function CalendarPage() {
   const updateTask = useData(s => s.updateTask)
   const setUI = useUI(s => s.set)
   const calendarTarget = useUI(s => s.calendarTarget)
+  const sidePanelEnabled = useUI(s => s.calendarSidePanel)
   const dndEnabled = useDndEnabled()
   const isMobile = useMedia('(max-width: 768px)')
+  // Desktop-only fixed panel: only render when enabled in App Settings AND on
+  // a desktop-width viewport (never on mobile, per requirements).
+  const showSidePanel = sidePanelEnabled && !isMobile
   // Default to day view on mobile; desktop stays on week. (Week IS available on
   // mobile now — we render a clean horizontally-scrollable week so the user
   // can opt in to it explicitly via the view switcher.)
@@ -3716,6 +3757,22 @@ function CalendarPage() {
     setSlotDraft({ start, end, view: v })
   }
 
+  // Desktop fixed side-panel: attach an existing task to the currently viewed
+  // date. Month view schedules an all-day task; Day/Week keep the task's own
+  // time (or default 09:00) so the pick lands sensibly on the visible range.
+  const attachExistingToView = (taskId: string) => {
+    const task = taskMap.get(taskId)
+    if (!task) return
+    const dueDate = format(date, 'yyyy-MM-dd')
+    const time = view === Views.MONTH ? task.time : (task.time || '09:00')
+    updateTask(task.id, {
+      dueDate,
+      time,
+      status: task.status === 'done' ? 'planned' : task.status,
+    })
+    setUI({ selected: task.id, details: true })
+  }
+
   // View choices in the order users naturally read them (Day → Week → Month →
   // Agenda). Mobile gets the SAME set as desktop — the previous build dropped
   // Week entirely on mobile, which is what made it feel broken. Mobile-only
@@ -3724,7 +3781,7 @@ function CalendarPage() {
   const viewChoices = allViews
 
   return (
-    <div className='calendar-page p-4 sm:p-6 h-full flex flex-col gap-4'>
+    <div className={cn('calendar-page p-4 sm:p-6 h-full flex gap-4', showSidePanel ? 'calendar-page-with-panel' : 'flex-col')}>
       <div className='min-h-0 flex-1 flex flex-col gap-3 sm:gap-4'>
         <div className='calendar-toolbar flex items-center gap-1.5 sm:gap-2 flex-wrap'>
           <button className='btn btn-secondary !h-9 !px-3 text-xs sm:text-sm' onClick={() => setDate(new Date())}>Today</button>
@@ -3837,6 +3894,32 @@ function CalendarPage() {
           )}
         </div>
       </div>
+      {/* Desktop-only fixed panel: reuses the exact "Select existing task"
+          list. Picking a task schedules it onto the currently viewed date.
+          Toggle-able from App Settings → "Calendar side panel". */}
+      {showSidePanel && (
+        <aside className='calendar-side-panel panel p-0 flex flex-col'>
+          <div className='p-4 border-b flex items-center gap-2'>
+            <div className='flex-1 min-w-0'>
+              <div className='text-sm font-semibold flex items-center gap-2'>
+                <ListChecks className='h-4 w-4' /> Select existing task
+              </div>
+              <div className='mt-0.5 text-xs text-zinc-500'>
+                Schedule to {format(date, view === Views.MONTH ? 'MMM yyyy' : 'EEE, MMM d')}
+              </div>
+            </div>
+            <button
+              className='btn btn-ghost !h-8 !px-2'
+              onClick={() => setUI({ calendarSidePanel: false })}
+              aria-label='Hide panel'
+              title='Hide panel (re-enable in Settings)'
+            >
+              <X className='h-4 w-4' />
+            </button>
+          </div>
+          <ExistingTaskList tasks={tasks} onPick={attachExistingToView} />
+        </aside>
+      )}
       {/* Slot chooser: after tapping a calendar slot, pick New or Existing task. */}
       {slotDraft && slotStep === 'choose' && (
         <SlotChoicePrompt
@@ -3928,14 +4011,16 @@ function SlotChoicePrompt({
   )
 }
 
-function ExistingTaskPicker({
-  slot, tasks, onClose, onBack, onPick,
+/* Shared searchable task list used by BOTH the modal ExistingTaskPicker and
+   the desktop fixed calendar side panel. Keeps the exact same visual language
+   (search field + newest-first task cards) so the two surfaces stay in sync. */
+function ExistingTaskList({
+  tasks, onPick, autoFocus = false, className,
 }: {
-  slot: { start: Date; end: Date; view: View }
   tasks: Task[]
-  onClose: () => void
-  onBack: () => void
   onPick: (taskId: string) => void
+  autoFocus?: boolean
+  className?: string
 }) {
   const [query, setQuery] = useState('')
   // Newest first: sort by createdAt descending (fall back to id order).
@@ -3946,6 +4031,45 @@ function ExistingTaskPicker({
       .filter(t => !q || t.title.toLowerCase().includes(q) || (t.description || '').toLowerCase().includes(q))
       .sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''))
   }, [tasks, query])
+  return (
+    <div className={cn('flex flex-col min-h-0 flex-1', className)}>
+      <div className='p-3 border-b'>
+        <div className='search-field'>
+          <Search className='search-field-icon' />
+          <input autoFocus={autoFocus} value={query} onChange={e => setQuery(e.target.value)} className='search-field-input' placeholder='Search tasks…' aria-label='Search tasks' />
+        </div>
+      </div>
+      <div className='min-h-0 flex-1 overflow-y-auto p-3 space-y-2 scrollbar-thin'>
+        {results.length === 0 && <Empty title='No tasks found' desc='Try a different search, or create a new task.' icon={ListChecks} />}
+        {results.map(task => (
+          <button
+            key={task.id}
+            type='button'
+            onClick={() => onPick(task.id)}
+            className='panel p-3 w-full text-left hover:shadow-sm transition hover:ring-2 hover:ring-indigo-500/30'
+          >
+            <div className='text-sm font-medium truncate'>{task.title}</div>
+            <div className='mt-1 flex flex-wrap items-center gap-2 text-[11px] text-zinc-500'>
+              {statusBadge(task.status)}
+              {priorityBadge(task.priority, 'compact-meta compact-meta-priority')}
+              {task.dueDate && <span className='inline-flex items-center gap-1'><CalendarDays className='h-3 w-3' />{format(parseISO(task.dueDate), 'MMM d')}{task.time && ` · ${task.time}`}</span>}
+            </div>
+          </button>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function ExistingTaskPicker({
+  slot, tasks, onClose, onBack, onPick,
+}: {
+  slot: { start: Date; end: Date; view: View }
+  tasks: Task[]
+  onClose: () => void
+  onBack: () => void
+  onPick: (taskId: string) => void
+}) {
   const when = slot.view === Views.MONTH
     ? format(slot.start, 'MMM d')
     : format(slot.start, 'MMM d · HH:mm')
@@ -3965,30 +4089,7 @@ function ExistingTaskPicker({
             <X className='h-4 w-4' />
           </button>
         </div>
-        <div className='p-3 border-b'>
-          <div className='search-field'>
-            <Search className='search-field-icon' />
-            <input autoFocus value={query} onChange={e => setQuery(e.target.value)} className='search-field-input' placeholder='Search tasks…' aria-label='Search tasks' />
-          </div>
-        </div>
-        <div className='min-h-0 flex-1 overflow-y-auto p-3 space-y-2 scrollbar-thin'>
-          {results.length === 0 && <Empty title='No tasks found' desc='Try a different search, or create a new task.' icon={ListChecks} />}
-          {results.map(task => (
-            <button
-              key={task.id}
-              type='button'
-              onClick={() => onPick(task.id)}
-              className='panel p-3 w-full text-left hover:shadow-sm transition hover:ring-2 hover:ring-indigo-500/30'
-            >
-              <div className='text-sm font-medium truncate'>{task.title}</div>
-              <div className='mt-1 flex flex-wrap items-center gap-2 text-[11px] text-zinc-500'>
-                {statusBadge(task.status)}
-                {priorityBadge(task.priority, 'compact-meta compact-meta-priority')}
-                {task.dueDate && <span className='inline-flex items-center gap-1'><CalendarDays className='h-3 w-3' />{format(parseISO(task.dueDate), 'MMM d')}{task.time && ` · ${task.time}`}</span>}
-              </div>
-            </button>
-          ))}
-        </div>
+        <ExistingTaskList tasks={tasks} onPick={onPick} autoFocus />
       </div>
     </>,
     document.body,

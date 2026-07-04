@@ -1530,6 +1530,21 @@
 .calendar-page{ overflow: hidden; }
 .calendar-toolbar .input{ min-width: 0; }
 
+/* Desktop-only fixed side panel on the right of the calendar. It reuses the
+   "Select existing task" list; picking a task schedules it onto the viewed
+   date. Toggle-able from App Settings. Never rendered on mobile. */
+.calendar-page-with-panel{ flex-direction: row; align-items: stretch; }
+.calendar-side-panel{
+  flex: 0 0 320px;
+  width: 320px;
+  min-height: 0;
+  overflow: hidden;
+  align-self: stretch;
+}
+@media (max-width: 1100px){
+  .calendar-side-panel{ flex-basis: 280px; width: 280px; }
+}
+
 /* The calendar fills available height on every breakpoint. min-width: 0 on the
    flex child is required so the month grid (7 equal-width day columns) can
    actually shrink to fit a narrow phone screen instead of overflowing —
