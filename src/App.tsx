@@ -2125,8 +2125,8 @@ function AllTasksPage() {
   const projects = useData(s => s.projects)
   const tags = useData(s => s.tags)
   const globalFilter = useData(s => s.filters)
+  const setGlobalFilters = useData(s => s.setFilters)
 
-  type SortKey = 'created' | 'updated' | 'due' | 'priority' | 'title'
   const [query, setQuery] = useState('')
   const [status, setStatus] = useState<Status | 'all'>('all')
   const [priority, setPriority] = useState<Priority | 'all'>('all')
@@ -2135,8 +2135,13 @@ function AllTasksPage() {
   const [favOnly, setFavOnly] = useState(false)
   const [includeDone, setIncludeDone] = useState(true)
   const [includeArchived, setIncludeArchived] = useState(false)
-  const [sortKey, setSortKey] = useState<SortKey>('updated')
-  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
+  // Sort is driven by the GLOBAL filter so the top-header "Filters & Sort"
+  // panel and this page's own sort control stay in sync and both work.
+  const sortKey = globalFilter.sort ?? 'updated'
+  const sortDir = globalFilter.sortDir ?? 'desc'
+  const setSortKey = (k: SortKey) => setGlobalFilters({ sort: k })
+  const setSortDir = (d: SortDir | ((prev: SortDir) => SortDir)) =>
+    setGlobalFilters({ sortDir: typeof d === 'function' ? d(sortDir) : d })
   const [showFilters, setShowFilters] = useState(false)
 
   const filtered = useMemo(() => {
@@ -2157,19 +2162,7 @@ function AllTasksPage() {
         (t.description || '').toLowerCase().includes(q)
       )
     }
-    const dir = sortDir === 'asc' ? 1 : -1
-    list.sort((a, b) => {
-      let r = 0
-      switch (sortKey) {
-        case 'title': r = a.title.localeCompare(b.title); break
-        case 'priority': r = priorityMeta[a.priority].rank - priorityMeta[b.priority].rank; break
-        case 'due': r = (a.dueDate || '￿').localeCompare(b.dueDate || '￿'); break
-        case 'created': r = a.createdAt.localeCompare(b.createdAt); break
-        case 'updated':
-        default: r = a.updatedAt.localeCompare(b.updatedAt); break
-      }
-      return r * dir
-    })
+    list.sort((a, b) => compareBy(a, b, sortKey, sortDir))
     return list
   }, [allTasks, globalFilter, includeArchived, includeDone, status, priority, projectId, tagId, favOnly, query, sortKey, sortDir])
 
@@ -2177,7 +2170,8 @@ function AllTasksPage() {
   const archivedCount = allTasks.filter(t => t.archived).length
   const resetFilters = () => {
     setQuery(''); setStatus('all'); setPriority('all'); setProjectId('all'); setTagId('all')
-    setFavOnly(false); setIncludeDone(true); setIncludeArchived(false); setSortKey('updated'); setSortDir('desc')
+    setFavOnly(false); setIncludeDone(true); setIncludeArchived(false)
+    setGlobalFilters({ sort: 'updated', sortDir: 'desc' })
   }
   const activeFilterCount = [
     query.trim().length > 0,
@@ -3705,6 +3699,7 @@ function CalendarPage() {
   const tasks = useData(s => s.tasks)
   const addTask = useData(s => s.addTask)
   const updateTask = useData(s => s.updateTask)
+  const toggleDone = useData(s => s.toggleDone)
   const setUI = useUI(s => s.set)
   const calendarTarget = useUI(s => s.calendarTarget)
   const sidePanelEnabled = useUI(s => s.calendarSidePanel)
@@ -3755,7 +3750,11 @@ function CalendarPage() {
   }, [calendarTarget, taskMap, setUI])
 
   const syncTaskToSlot = (task: Task, start: Date, end: Date, allDay?: boolean) => {
-    const minutes = Math.max(30, Math.round((end.getTime() - start.getTime()) / 60000) || task.estimatedMinutes || 60)
+    // For an all-day drop we keep the task's own estimated duration (an all-day
+    // slot spans the whole day, so the raw start→end diff isn't meaningful).
+    const minutes = allDay
+      ? (task.estimatedMinutes || 60)
+      : Math.max(30, Math.round((end.getTime() - start.getTime()) / 60000) || task.estimatedMinutes || 60)
     updateTask(task.id, {
       dueDate: format(start, 'yyyy-MM-dd'),
       time: allDay ? undefined : format(start, 'HH:mm'),
@@ -3876,6 +3875,59 @@ function CalendarPage() {
     } as Event & { resource: Task }
   }
 
+  // Desktop calendar event renderer. Requirements:
+  //  • A NORMAL click (no meaningful pointer movement) opens the task details.
+  //  • DRAGGING an event (to reschedule) must NEVER open details.
+  //  • Clicking the status checkbox toggles the task and must NEVER open details.
+  // We can't rely on react-big-calendar's onSelectEvent because it also fires at
+  // the end of a drag gesture, so instead we detect a click-vs-drag ourselves by
+  // measuring pointer travel between pointerdown and pointerup.
+  // Defined once (stable identity) so react-big-calendar doesn't remount every
+  // event chip on each CalendarPage render. `toggleDone` / `setUI` are stable
+  // zustand actions, so they don't need to be dependencies.
+  const CalendarEvent = useMemo(() => {
+    const DRAG_THRESHOLD = 5 // px — pointer travel beyond this counts as a drag
+    return function CalendarEvent({ event }: { event: Event & { resource?: Task } }) {
+      const task = event.resource
+      const downRef = useRef<{ x: number; y: number } | null>(null)
+      if (!task) return <span className='calendar-event-title'>{event.title}</span>
+      return (
+        <div className='calendar-event-content flex items-center gap-1.5 min-w-0'>
+          {/* Status checkbox — toggling never bubbles up to open the details
+              panel and never starts a calendar drag (stops pointerdown). */}
+          <span
+            className='calendar-event-check inline-flex shrink-0'
+            onPointerDown={e => e.stopPropagation()}
+            onMouseDown={e => e.stopPropagation()}
+            onClick={e => { e.stopPropagation(); e.preventDefault(); toggleDone(task.id) }}
+          >
+            <StatusDot status={task.status} onClick={() => {}} />
+          </span>
+          <span
+            className={cn('calendar-event-title truncate', task.status === 'done' && 'line-through opacity-60')}
+            onPointerDown={e => { downRef.current = { x: e.clientX, y: e.clientY } }}
+            onClick={e => {
+              const down = downRef.current
+              downRef.current = null
+              // Only a genuine click (tiny/zero pointer travel) opens details.
+              // A drag moves the pointer beyond the threshold → do nothing so
+              // the reschedule drop is the only outcome.
+              if (down) {
+                const moved = Math.hypot(e.clientX - down.x, e.clientY - down.y)
+                if (moved > DRAG_THRESHOLD) return
+              }
+              e.stopPropagation()
+              setUI({ selected: task.id, details: true })
+            }}
+          >
+            {event.title}
+          </span>
+        </div>
+      )
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   // View choices in the order users naturally read them (Day → Week → Month →
   // Agenda). Mobile gets the SAME set as desktop — the previous build dropped
   // Week entirely on mobile, which is what made it feel broken. Mobile-only
@@ -3967,9 +4019,13 @@ function CalendarPage() {
             draggableAccessor={() => dndEnabled}
             resizableAccessor={() => dndEnabled}
             popup
-            onEventDrop={dndEnabled ? ({ event, start, end, allDay }: any) => {
+            onEventDrop={dndEnabled ? ({ event, start, end, allDay, isAllDay }: any) => {
               const task = (event as Event & { resource: Task }).resource
-              if (task) syncTaskToSlot(task, start, end, allDay)
+              // react-big-calendar reports a drop onto the all-day header via
+              // `isAllDay` (the timed-cell drop handler omits it entirely). Treat
+              // either flag as "make this an all-day task": clear its time while
+              // keeping the same date.
+              if (task) syncTaskToSlot(task, start, end, Boolean(allDay || isAllDay))
             } : undefined}
             onEventResize={dndEnabled ? ({ event, start, end }: any) => {
               const task = (event as Event & { resource: Task }).resource
@@ -3978,7 +4034,12 @@ function CalendarPage() {
             onDropFromOutside={showSidePanel && dndEnabled ? handleDropFromOutside : undefined}
             dragFromOutsideItem={showSidePanel && dndEnabled ? dragFromOutsideItem : undefined}
             style={{ height: '100%' }}
-            onSelectEvent={(e: Event & { resource: Task }) => setUI({ selected: e.resource.id, details: true })}
+            components={{ event: CalendarEvent }}
+            // Click-to-open is handled inside CalendarEvent so we can tell a real
+            // click apart from the end of a drag (and ignore checkbox clicks).
+            // We intentionally do NOT open details from onSelectEvent because RBC
+            // fires it at the end of a drag too, which would re-open details after
+            // every reschedule.
             onSelectSlot={(slot: { start: Date; end: Date; action?: string }) => {
               // Open the New/Existing chooser popup for the tapped slot.
               openSlotChooser(slot.start, slot.end, view)

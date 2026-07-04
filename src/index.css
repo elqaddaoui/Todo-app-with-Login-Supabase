@@ -1066,6 +1066,36 @@
   box-shadow: 0 0 0 2px hsl(var(--focus) / .5), 0 4px 12px rgba(0,0,0,.18) !important;
 }
 
+/* ---- Custom calendar event content (checkbox + title) ---- */
+.calendar-event-content{
+  width: 100%;
+  min-width: 0;
+  line-height: 1.2;
+}
+.calendar-event-content .calendar-event-check{
+  cursor: pointer;
+}
+/* Keep the status icon compact so it sits nicely inside the small event chip. */
+.calendar-event-content .calendar-event-check > button{
+  margin-top: 0 !important;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  line-height: 0;
+}
+.calendar-event-content .calendar-event-check svg{
+  height: 14px;
+  width: 14px;
+}
+.calendar-event-content .calendar-event-title{
+  flex: 1 1 auto;
+  min-width: 0;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* ---- CURRENT TIME INDICATOR — modern, with glow + dot ---- */
 .rbc-current-time-indicator{
   background: hsl(0 80% 60%);
