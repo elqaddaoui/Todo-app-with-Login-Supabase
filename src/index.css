@@ -321,6 +321,14 @@
   background: hsl(var(--accent) / .35);
   transform: translateY(-0.5px);
 }
+/* Parent shown only because a subtask matched the search — dim it so the
+   actual matching subtask stands out while the hierarchy stays visible. */
+.task-row.task-row-search-context{
+  opacity: .5;
+}
+.task-row.task-row-search-context:hover{
+  opacity: .75;
+}
 .dark .task-row:hover{
   background: hsl(var(--surface-4));
   border-color: rgba(255,255,255,.08);
@@ -673,6 +681,21 @@
   backdrop-filter: blur(2px);
 }
 .dark .popup-overlay{ background: rgba(0,0,0,.55); }
+
+/* Global filter popup backdrop.
+   On desktop we intentionally remove the dark tint + blur so the whole app
+   stays fully visible and users can watch their filter/search changes apply in
+   real time. The overlay is still present (transparent) so an outside click
+   continues to close the popup. On mobile it keeps the standard dimmed
+   backdrop for focus. */
+@media (min-width: 769px){
+  .popup-overlay.filter-overlay{
+    background: transparent;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+  .dark .popup-overlay.filter-overlay{ background: transparent; }
+}
 
 /* Quick Settings popup — a compact shortcut to the Settings page.
    Anchors near the top-left topbar button on desktop; on small screens
