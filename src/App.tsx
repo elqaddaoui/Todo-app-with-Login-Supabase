@@ -183,7 +183,6 @@ const baseFilter: FilterState = { search: '', projectIds: [], statuses: [], prio
 
 const SORT_OPTIONS: { key: SortKey; label: string }[] = [
   { key: 'updated', label: 'Updated' },
-  { key: 'selected', label: 'Selected' },
   { key: 'created', label: 'Created' },
   { key: 'due', label: 'Due Date' },
   { key: 'priority', label: 'Priority' },
@@ -2001,9 +2000,9 @@ function UndoToastHost() {
           className='undo-toast'
           role='status'
           aria-live='polite'
-          initial={{ opacity: 0, y: 16, scale: 0.98 }}
-          animate={{ opacity: 1, y: 0, scale: 1 }}
-          exit={{ opacity: 0, y: 16, scale: 0.98 }}
+          initial={{ opacity: 0, x: '-50%', y: 16, scale: 0.98 }}
+          animate={{ opacity: 1, x: '-50%', y: 0, scale: 1 }}
+          exit={{ opacity: 0, x: '-50%', y: 16, scale: 0.98 }}
           transition={{ type: 'spring', stiffness: 420, damping: 34 }}
         >
           <Icon className='h-4 w-4 shrink-0 text-indigo-300' />

@@ -374,6 +374,36 @@
   border-bottom-color: rgba(255,255,255,.05);
 }
 
+/* Mobile: keep every top-header action on a single row with no horizontal
+   scroll or hidden/clipped buttons. We only tighten spacing & padding here —
+   desktop (>= 640px) is left completely untouched. */
+@media (max-width: 640px){
+  .topbar{
+    padding-left: 8px;
+    padding-right: 8px;
+    gap: 4px;
+    flex-wrap: nowrap;   /* stay on one row */
+    overflow-x: hidden;  /* never introduce a horizontal scrollbar */
+  }
+  /* Icon buttons in the header become tighter so all of them fit. */
+  .topbar .btn{
+    padding-left: 8px;
+    padding-right: 8px;
+    gap: 4px;
+  }
+  /* The Undo/Redo group divider gets a slimmer left margin/padding. */
+  .topbar .border-l{
+    margin-left: 4px !important;
+    padding-left: 4px !important;
+  }
+  /* The "New task" primary button keeps its icon; label is already hidden on
+     mobile via `hidden sm:inline`, so just trim its padding a touch. */
+  .topbar .btn-primary{
+    padding-left: 10px;
+    padding-right: 10px;
+  }
+}
+
 /* ============================================================
    EMPTY STATES
    ============================================================ */
@@ -3012,7 +3042,8 @@ body.is-dnd-dragging *{
   position: fixed;
   left: 50%;
   bottom: 24px;
-  transform: translateX(-50%);
+  /* Horizontal centering (translateX(-50%)) is applied via framer-motion's
+     `x: '-50%'` inline transform so it composes with the enter/exit y-animation. */
   z-index: 90;
   display: flex;
   align-items: center;
