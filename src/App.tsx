@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { NavLink, Navigate, Route, Routes, useNavigate, useParams, useLocation } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
+import { SignInPage, SignUpPage } from './AuthPages'
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import { useForm, Controller } from 'react-hook-form'
@@ -5683,6 +5684,8 @@ function Layout() {
             <Route path='/archive' element={<ArchivePage />} />
             <Route path='/tags' element={<TagsPage />} />
             <Route path='/settings' element={<SettingsPage />} />
+            <Route path='/signin' element={<SignInPage />} />
+            <Route path='/signup' element={<SignUpPage />} />
             {/* Catch-all → never show a 404; route to /today */}
             <Route path='*' element={<Navigate to='/today' replace />} />
           </Routes>
