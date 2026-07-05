@@ -1,7 +1,8 @@
 import { useState, type FormEvent } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link, Navigate, useNavigate } from 'react-router-dom'
 import { Loader2, Mail, Lock, CheckCircle2 } from 'lucide-react'
 import { supabase } from './supabaseClient'
+import { useIsAuthenticated } from './auth'
 
 type Mode = 'signin' | 'signup'
 
@@ -12,6 +13,7 @@ type Mode = 'signin' | 'signup'
  */
 function AuthForm({ mode }: { mode: Mode }) {
   const navigate = useNavigate()
+  const authenticated = useIsAuthenticated()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [loading, setLoading] = useState(false)
@@ -59,6 +61,9 @@ function AuthForm({ mode }: { mode: Mode }) {
       setLoading(false)
     }
   }
+
+  // Already signed in? Never show the auth form — send them into the app.
+  if (authenticated) return <Navigate to='/' replace />
 
   return (
     <div className='h-full w-full flex items-center justify-center p-4 bg-[hsl(var(--background))] text-[hsl(var(--foreground))]'>

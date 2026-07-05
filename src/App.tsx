@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { NavLink, Navigate, Route, Routes, useNavigate, useParams, useLocation } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { SignInPage, SignUpPage } from './AuthPages'
+import { useAuthBootstrap, useAuthLoading, useIsAuthenticated, signOut } from './auth'
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import { useForm, Controller } from 'react-hook-form'
@@ -22,7 +23,7 @@ import {
   Sparkles, Target, Rocket, BookOpen, Heart, Briefcase, Circle, PauseCircle, Ban, PlayCircle, CalendarClock,
   Copy, Link as LinkIcon, ExternalLink, FolderInput, Tag as TagIcon,
   Image as ImageIcon, MapPinned, ArrowUp, ArrowDown, Move, SlidersHorizontal,
-  Undo2, Redo2, RotateCcw
+  Undo2, Redo2, RotateCcw, LogOut
 } from 'lucide-react'
 import { createPortal } from 'react-dom'
 
@@ -2183,6 +2184,21 @@ function Sidebar() {
           </>
         )}
       </div>
+
+      {/* Account footer — sign out reuses the existing nav-item styling so it
+          matches the rest of the sidebar. On sign-out, the auth subscription
+          clears the session and RequireAuth redirects to /signin. */}
+      <div className='border-t p-2'>
+        <button
+          className='nav-item w-full'
+          onClick={() => { ui.set({ mobileNav: false }); void signOut() }}
+          title='Sign out'
+        >
+          <LogOut className='h-4 w-4 text-zinc-500' />
+          {ui.sidebar && <span className='flex-1 truncate text-left'>Sign out</span>}
+        </button>
+      </div>
+
       {creatingProject && (
         <NamePrompt
           title='New project'
@@ -5684,8 +5700,6 @@ function Layout() {
             <Route path='/archive' element={<ArchivePage />} />
             <Route path='/tags' element={<TagsPage />} />
             <Route path='/settings' element={<SettingsPage />} />
-            <Route path='/signin' element={<SignInPage />} />
-            <Route path='/signup' element={<SignUpPage />} />
             {/* Catch-all → never show a 404; route to /today */}
             <Route path='*' element={<Navigate to='/today' replace />} />
           </Routes>
@@ -5812,17 +5826,64 @@ function useInstallGlobalAlert() {
   }, [])
 }
 
+/**
+ * Route guard for the authenticated application. Redirects to the existing
+ * sign-in page when there is no Supabase session, preserving the attempted
+ * location so the user returns there after signing in. All protected pages
+ * render through this guard, so none are reachable while signed out.
+ */
+function RequireAuth({ children }: { children: React.ReactNode }) {
+  const authenticated = useIsAuthenticated()
+  const location = useLocation()
+  if (!authenticated) {
+    return <Navigate to='/signin' replace state={{ from: location }} />
+  }
+  return <>{children}</>
+}
+
 export default function App() {
-  useBootstrap()
+  // Bootstrap the Supabase session first so protected routes and the auth
+  // pages both read a settled auth state (avoids flashing sign-in on refresh).
+  useAuthBootstrap()
   useInstallGlobalAlert()
-  const booted = useData(s => s.booted)
-  if (!booted) return <div className='h-full flex items-center justify-center text-sm text-zinc-500'>Loading…</div>
+  const authLoading = useAuthLoading()
+
+  // Wait for the initial session check before deciding what to render.
+  if (authLoading) {
+    return <div className='h-full flex items-center justify-center text-sm text-zinc-500'>Loading…</div>
+  }
+
   return (
     <ErrorBoundary>
-      <Layout />
+      <Routes>
+        {/* Public auth pages render standalone — no sidebar/topbar chrome. */}
+        <Route path='/signin' element={<SignInPage />} />
+        <Route path='/signup' element={<SignUpPage />} />
+        {/* Everything else is the protected application. */}
+        <Route
+          path='*'
+          element={
+            <RequireAuth>
+              <AppShell />
+            </RequireAuth>
+          }
+        />
+      </Routes>
       <AlertHost />
       <UndoRedoShortcuts />
       <UndoToastHost />
     </ErrorBoundary>
   )
+}
+
+/**
+ * The authenticated application shell. Loads the app's data (previously done
+ * unconditionally in App) only once the user is authenticated, then renders
+ * the existing Layout unchanged.
+ */
+function AppShell() {
+  useBootstrap()
+  const booted = useData(s => s.booted)
+  if (!booted) return <div className='h-full flex items-center justify-center text-sm text-zinc-500'>Loading…</div>
+  return <Layout />
 }
