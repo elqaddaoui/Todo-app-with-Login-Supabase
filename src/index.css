@@ -3096,3 +3096,416 @@ body.is-dnd-dragging *{
 @media (max-width: 480px){
   .undo-toast{ bottom: 16px; max-width: 94vw; }
 }
+
+/* ============================================================
+   PROFILE CARD — sidebar account footer (premium / minimal)
+   A compact identity chip: avatar (image or initials) + status dot,
+   name, email. Clicking it opens the Account page. Reuses the design
+   system surfaces & focus rings so it feels native to the sidebar.
+   ============================================================ */
+.profile-card{
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px;
+  border-radius: 14px;
+  border: 1px solid hsl(var(--border));
+  background: hsl(var(--muted) / .5);
+  color: hsl(var(--text-primary));
+  text-align: left;
+  transition: background .18s ease, border-color .18s ease, box-shadow .2s ease, transform .15s ease;
+}
+.profile-card:hover{
+  background: hsl(var(--accent));
+  border-color: hsl(var(--border));
+  transform: translateY(-0.5px);
+  box-shadow: var(--shadow-sm);
+}
+.dark .profile-card{
+  background: hsl(var(--surface-3));
+  border-color: rgba(255,255,255,.06);
+}
+.dark .profile-card:hover{
+  background: hsl(var(--surface-hover));
+  border-color: rgba(255,255,255,.10);
+}
+.profile-card:focus-visible{
+  outline: none;
+  box-shadow: 0 0 0 2px hsl(var(--background)), 0 0 0 4px hsl(var(--focus) / .5);
+}
+.profile-card .profile-meta{ min-width: 0; flex: 1; line-height: 1.2; }
+.profile-card .profile-name{
+  font-size: 13px; font-weight: 600;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.profile-card .profile-email{
+  font-size: 11px; color: hsl(var(--text-muted));
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* Collapsed-sidebar variant: just the avatar, centered. */
+.profile-card.is-collapsed{
+  justify-content: center;
+  padding: 6px;
+  gap: 0;
+  background: transparent;
+  border-color: transparent;
+}
+.profile-card.is-collapsed:hover{
+  background: hsl(var(--accent));
+  transform: none;
+}
+.dark .profile-card.is-collapsed{ background: transparent; border-color: transparent; }
+.dark .profile-card.is-collapsed:hover{ background: hsl(var(--surface-hover)); }
+
+/* ---- Avatar (shared by sidebar + account page) ---- */
+.avatar{
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  overflow: hidden;
+  font-weight: 700;
+  letter-spacing: .01em;
+  color: #fff;
+  background: linear-gradient(135deg, hsl(238 84% 67%), hsl(268 80% 62%));
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.18), 0 1px 2px rgba(0,0,0,.18);
+  user-select: none;
+}
+.avatar img{ width: 100%; height: 100%; object-fit: cover; display: block; }
+.avatar-sm{ height: 34px; width: 34px; font-size: 13px; }
+.avatar-md{ height: 44px; width: 44px; font-size: 16px; }
+.avatar-lg{ height: 72px; width: 72px; font-size: 26px; }
+/* Presence / status dot on avatars */
+.avatar-status{
+  position: absolute;
+  right: -1px; bottom: -1px;
+  height: 10px; width: 10px;
+  border-radius: 999px;
+  background: hsl(152 62% 45%);
+  box-shadow: 0 0 0 2px hsl(var(--card));
+}
+.dark .avatar-status{ box-shadow: 0 0 0 2px hsl(var(--surface-3)); }
+.avatar-status.is-unverified{ background: hsl(38 92% 55%); }
+
+/* ============================================================
+   ACCOUNT PAGE — premium header + sectioned settings
+   ============================================================ */
+.account-hero{
+  position: relative;
+  border-radius: 20px;
+  overflow: hidden;
+  border: 1px solid hsl(var(--border));
+  background: hsl(var(--card));
+}
+.dark .account-hero{
+  border-color: rgba(255,255,255,.06);
+  background: hsl(var(--surface-3));
+  box-shadow: var(--shadow-elev);
+}
+.account-hero-banner{
+  height: 92px;
+  background:
+    radial-gradient(120% 160% at 15% 0%, hsl(238 84% 67% / .55), transparent 60%),
+    radial-gradient(120% 160% at 85% 0%, hsl(268 80% 62% / .45), transparent 60%),
+    linear-gradient(120deg, hsl(218 90% 60% / .35), hsl(268 80% 62% / .30));
+}
+.dark .account-hero-banner{
+  background:
+    radial-gradient(120% 160% at 15% 0%, hsl(238 84% 67% / .40), transparent 60%),
+    radial-gradient(120% 160% at 85% 0%, hsl(268 80% 62% / .34), transparent 60%),
+    linear-gradient(120deg, hsl(218 90% 60% / .22), hsl(268 80% 62% / .20));
+}
+.account-hero-body{
+  padding: 0 20px 20px;
+  margin-top: -36px;
+  display: flex;
+  align-items: flex-end;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.account-hero-body .avatar{
+  box-shadow: 0 0 0 4px hsl(var(--card)), inset 0 1px 0 rgba(255,255,255,.18), 0 4px 14px rgba(0,0,0,.20);
+}
+.dark .account-hero-body .avatar{
+  box-shadow: 0 0 0 4px hsl(var(--surface-3)), inset 0 1px 0 rgba(255,255,255,.18), 0 4px 14px rgba(0,0,0,.35);
+}
+.account-hero-ident{ min-width: 0; flex: 1; padding-bottom: 2px; }
+
+.account-badge{
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  border: 1px solid transparent;
+}
+.account-badge.is-verified{
+  color: hsl(152 55% 38%);
+  background: hsl(152 62% 45% / .12);
+  border-color: hsl(152 62% 45% / .28);
+}
+.dark .account-badge.is-verified{ color: hsl(152 62% 62%); }
+.account-badge.is-unverified{
+  color: hsl(32 80% 42%);
+  background: hsl(38 92% 55% / .12);
+  border-color: hsl(38 92% 55% / .30);
+}
+.dark .account-badge.is-unverified{ color: hsl(40 90% 66%); }
+
+.account-meta-grid{
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 10px;
+  margin-top: 16px;
+  padding: 0 20px 20px;
+}
+.account-meta-item{
+  border-radius: 12px;
+  border: 1px solid hsl(var(--border));
+  background: hsl(var(--muted) / .4);
+  padding: 10px 12px;
+}
+.dark .account-meta-item{
+  border-color: rgba(255,255,255,.06);
+  background: hsl(var(--surface-4) / .5);
+}
+.account-meta-item .k{ font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em; color: hsl(var(--text-muted)); }
+.account-meta-item .v{ font-size: 13px; font-weight: 600; margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Inline feedback banners inside account/auth sections */
+.form-note{
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  border-radius: 12px;
+  padding: 10px 12px;
+  font-size: 13px;
+  line-height: 1.35;
+}
+.form-note.is-error{ color: hsl(0 72% 45%); background: hsl(0 72% 51% / .10); border: 1px solid hsl(0 72% 51% / .28); }
+.dark .form-note.is-error{ color: hsl(0 90% 74%); }
+.form-note.is-success{ color: hsl(152 55% 34%); background: hsl(152 62% 45% / .12); border: 1px solid hsl(152 62% 45% / .28); }
+.dark .form-note.is-success{ color: hsl(152 62% 66%); }
+.form-note.is-info{ color: hsl(218 60% 44%); background: hsl(218 90% 60% / .12); border: 1px solid hsl(218 90% 60% / .28); }
+.dark .form-note.is-info{ color: hsl(212 90% 76%); }
+.form-note svg{ flex: 0 0 auto; margin-top: 1px; }
+
+.field-label{
+  display: block;
+  font-size: 12px;
+  font-weight: 500;
+  color: hsl(var(--text-muted));
+  margin-bottom: 6px;
+}
+
+/* ============================================================
+   AUTH PAGES — premium dark split experience (Sign in / Sign up)
+   Left: brand / value panel with animated gradient.
+   Right: the form card. Collapses to a single centered card on mobile.
+   ============================================================ */
+.auth-shell{
+  min-height: 100%;
+  width: 100%;
+  display: grid;
+  grid-template-columns: 1fr;
+  background: hsl(var(--background));
+  color: hsl(var(--foreground));
+  position: relative;
+  isolation: isolate;
+}
+@media (min-width: 900px){
+  .auth-shell{ grid-template-columns: 1.05fr 1fr; }
+}
+/* Ambient background glow — never plain black */
+.auth-shell::before{
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background:
+    radial-gradient(900px 500px at 12% -8%, hsl(238 84% 67% / .18), transparent 60%),
+    radial-gradient(800px 520px at 100% 110%, hsl(268 80% 62% / .16), transparent 60%);
+}
+
+/* ---- Brand / value panel (left) ---- */
+.auth-aside{
+  position: relative;
+  display: none;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 48px;
+  overflow: hidden;
+  border-right: 1px solid hsl(var(--border));
+  background:
+    linear-gradient(155deg, hsl(232 40% 12%), hsl(250 42% 12%) 55%, hsl(224 44% 10%));
+}
+@media (min-width: 900px){ .auth-aside{ display: flex; } }
+.auth-aside::after{
+  content: '';
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(600px 380px at 20% 12%, hsl(238 90% 68% / .30), transparent 60%),
+    radial-gradient(520px 420px at 88% 92%, hsl(276 84% 66% / .26), transparent 62%);
+  pointer-events: none;
+}
+.auth-brand{
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  color: #fff;
+}
+.auth-brand-badge{
+  height: 44px; width: 44px;
+  border-radius: 14px;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-weight: 800; font-size: 20px;
+  color: #fff;
+  background: linear-gradient(135deg, hsl(238 84% 67%), hsl(268 80% 62%));
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.25), 0 8px 24px hsl(250 80% 50% / .45);
+}
+.auth-brand-title{ font-size: 17px; font-weight: 700; letter-spacing: -0.01em; }
+.auth-brand-sub{ font-size: 12px; color: rgba(255,255,255,.62); }
+
+.auth-hero{ position: relative; color: #fff; max-width: 30rem; }
+.auth-hero h2{
+  font-size: 30px;
+  line-height: 1.15;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  background: linear-gradient(120deg, #fff, #d9ddff 60%, #c4b5fd);
+  -webkit-background-clip: text; background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+.auth-hero p{ margin-top: 14px; font-size: 14.5px; line-height: 1.6; color: rgba(255,255,255,.72); }
+.auth-feature-list{ position: relative; margin-top: 26px; display: flex; flex-direction: column; gap: 14px; }
+.auth-feature{
+  display: flex; align-items: center; gap: 12px;
+  color: rgba(255,255,255,.86); font-size: 13.5px; font-weight: 500;
+}
+.auth-feature .auth-feature-icon{
+  height: 34px; width: 34px; border-radius: 10px;
+  display: inline-flex; align-items: center; justify-content: center;
+  flex: 0 0 auto;
+  color: #dbe3ff;
+  background: rgba(255,255,255,.08);
+  border: 1px solid rgba(255,255,255,.12);
+}
+.auth-aside-foot{ position: relative; color: rgba(255,255,255,.5); font-size: 12px; }
+
+/* ---- Form side (right) ---- */
+.auth-main{
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+.auth-card{
+  width: 100%;
+  max-width: 25rem;
+}
+.auth-card-head{ text-align: center; margin-bottom: 24px; }
+/* Compact brand shown ONLY on small screens (the aside is hidden there). */
+.auth-card-brand{
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 18px;
+}
+@media (min-width: 900px){ .auth-card-brand{ display: none; } }
+.auth-card-brand .auth-brand-badge{ height: 40px; width: 40px; border-radius: 12px; font-size: 18px; }
+.auth-card-title{ font-size: 22px; font-weight: 700; letter-spacing: -0.02em; }
+.auth-card-sub{ margin-top: 6px; font-size: 13.5px; color: hsl(var(--text-muted)); }
+
+/* A slightly taller, icon-aligned input used on the auth pages. Built on the
+   design-system tokens so it matches the rest of the app but with roomier
+   touch targets and consistent 44px icon gutters. */
+.auth-field{ position: relative; }
+.auth-field > .auth-field-icon{
+  position: absolute;
+  left: 14px; top: 50%;
+  transform: translateY(-50%);
+  height: 18px; width: 18px;
+  color: hsl(var(--text-muted));
+  pointer-events: none;
+}
+.auth-field input{
+  height: 46px;
+  width: 100%;
+  border-radius: 12px;
+  border: 1px solid hsl(var(--input));
+  background: transparent;
+  padding: 0 44px;
+  font-size: 14px;
+  color: hsl(var(--text-primary));
+  transition: border-color .18s ease, box-shadow .18s ease, background .18s ease;
+}
+.auth-field input::placeholder{ color: hsl(var(--text-muted)); }
+.auth-field input:focus{
+  outline: none;
+  border-color: hsl(var(--focus) / .8);
+  box-shadow: 0 0 0 3px hsl(var(--focus) / .18);
+}
+.dark .auth-field input{
+  background: hsl(var(--surface-3));
+  border-color: rgba(255,255,255,.07);
+  box-shadow: inset 0 1px 0 rgba(0,0,0,.20);
+}
+.dark .auth-field input:focus{
+  background: hsl(var(--surface-4));
+  border-color: hsl(var(--focus) / .65);
+  box-shadow: inset 0 1px 0 rgba(0,0,0,.20), 0 0 0 3px hsl(var(--focus) / .22);
+}
+.auth-field:focus-within > .auth-field-icon{ color: hsl(var(--focus)); }
+/* Trailing button (show/hide password) — sits in the right gutter. */
+.auth-field-trailing{
+  position: absolute;
+  right: 8px; top: 50%;
+  transform: translateY(-50%);
+  height: 32px; width: 32px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 8px;
+  color: hsl(var(--text-muted));
+  transition: background .15s, color .15s;
+}
+.auth-field-trailing:hover{ background: hsl(var(--accent)); color: hsl(var(--text-primary)); }
+.dark .auth-field-trailing:hover{ background: hsl(var(--surface-hover)); }
+
+.auth-btn{
+  height: 46px;
+  width: 100%;
+  border-radius: 12px;
+  font-size: 14px;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+.auth-row-between{ display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.auth-divider{
+  display: flex; align-items: center; gap: 12px;
+  margin: 20px 0;
+  color: hsl(var(--text-muted));
+  font-size: 12px;
+}
+.auth-divider::before,
+.auth-divider::after{
+  content: ''; height: 1px; flex: 1;
+  background: hsl(var(--border));
+}
+.dark .auth-divider::before,
+.dark .auth-divider::after{ background: rgba(255,255,255,.08); }
+.auth-switch{ margin-top: 22px; text-align: center; font-size: 13.5px; color: hsl(var(--text-muted)); }
+.auth-switch a{
+  font-weight: 600;
+  color: hsl(var(--focus));
+  text-underline-offset: 3px;
+}
+.auth-switch a:hover{ text-decoration: underline; }

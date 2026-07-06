@@ -2,11 +2,15 @@ import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { NavLink, Navigate, Route, Routes, useNavigate, useParams, useLocation } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { SignInPage, SignUpPage } from './AuthPages'
-import { useAuthBootstrap, useAuthLoading, useIsAuthenticated, useSession, signOut } from './auth'
+import {
+  useAuthBootstrap, useAuthLoading, useIsAuthenticated, useSession, signOut,
+  useProfile, type UserProfile,
+  updateProfile, updatePassword, updateEmail, sendPasswordReset,
+} from './auth'
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import { newId } from './data/id'
-import { loadBootstrap, loadSettings } from './data/load'
+import { loadBootstrap, loadSettings, claimInitialSeed } from './data/load'
 import { diffAndPersist, setSyncErrorHandler, flushSync, type Snapshot } from './data/sync'
 import { persistSettings, setSettingsUserId } from './data/settings'
 import type { UserSettings } from './data/types'
@@ -28,7 +32,8 @@ import {
   Sparkles, Target, Rocket, BookOpen, Heart, Briefcase, Circle, PauseCircle, Ban, PlayCircle, CalendarClock,
   Copy, Link as LinkIcon, ExternalLink, FolderInput, Tag as TagIcon,
   Image as ImageIcon, MapPinned, ArrowUp, ArrowDown, Move, SlidersHorizontal,
-  Undo2, Redo2, RotateCcw, LogOut
+  Undo2, Redo2, RotateCcw, LogOut,
+  ChevronRight as ChevronRightIcon, User, Mail, KeyRound, ShieldCheck, Eye, EyeOff, Loader2, Save, ArrowLeft
 } from 'lucide-react'
 import { createPortal } from 'react-dom'
 
@@ -832,9 +837,18 @@ function seedForNewUser(src: Bootstrap): Bootstrap {
 
 /**
  * Load the authenticated user's dataset from Supabase and hydrate the store.
- * First-time users (no rows yet) are seeded with the demo content so the app
- * is never empty on first launch. Once hydrated, the Supabase sync bridge is
- * armed with the loaded data as its baseline.
+ *
+ * Data-initialization contract (no duplicates, ever):
+ *   • EXISTING users always load ONLY their own Supabase rows — we never seed,
+ *     recreate or duplicate anything for them.
+ *   • BRAND-NEW accounts are seeded with the demo content exactly ONCE, guarded
+ *     by an atomic server-side claim (`claimInitialSeed` → migration 0002).
+ *     Only the single caller that wins the claim performs the seed; a refetch,
+ *     a StrictMode double-effect, a second tab or another device all lose the
+ *     claim and therefore never re-seed.
+ *
+ * Once hydrated, the Supabase sync bridge is armed with the loaded data as its
+ * baseline so subsequent local edits diff against the correct starting point.
  */
 function useBootstrap() {
   const hydrate = useData(s => s.hydrate)
@@ -844,12 +858,30 @@ function useBootstrap() {
   const q = useQuery({
     queryKey: ['bootstrap', userId],
     enabled: !!userId,
+    // Never auto-refetch the bootstrap: it's a one-shot load for the session.
+    // Belt-and-suspenders on top of the server-side seed claim so we don't even
+    // attempt a redundant load that could momentarily observe an empty account.
+    staleTime: Infinity,
+    gcTime: Infinity,
+    refetchOnMount: false,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+    retry: false,
     queryFn: async (): Promise<Bootstrap> => {
       const loaded = await loadBootstrap()
       const isEmpty =
         loaded.tasks.length === 0 && loaded.projects.length === 0 && loaded.tags.length === 0
+      // Existing user (has data) → always return exactly their own rows.
       if (!isEmpty) return loaded
-      // Brand-new account: seed demo content and persist it immediately.
+
+      // Empty account: attempt to atomically claim the one-time seed. Only the
+      // very first caller for this account ever wins; everyone else gets false
+      // and returns the empty dataset (their real, already-seeded rows will be
+      // read on the next natural load). This makes seeding idempotent and
+      // duplicate-proof across refetches, tabs and devices.
+      const won = await claimInitialSeed()
+      if (!won) return loaded
+
       const seeded = seedForNewUser(boot)
       beginSync(userId!, { tasks: [], projects: [], tags: [] })
       diffAndPersist({ tasks: [], projects: [], tags: [] }, seeded, userId!)
@@ -2290,6 +2322,72 @@ function UndoRedoButtons() {
 /* ============================================================
    Sidebar (Improvement #1: projects + sidebar search fit)
    ============================================================ */
+/* ============================================================
+   Profile avatar — image when available, otherwise initials on a
+   gradient. Shared by the sidebar identity card and the Account page.
+   `overrideUrl` / `overrideName` allow a live preview while editing the
+   profile without waiting for the session to refresh.
+   ============================================================ */
+function ProfileAvatar({
+  profile,
+  size = 'sm',
+  showStatus = false,
+  overrideUrl,
+  overrideName,
+}: {
+  profile: UserProfile
+  size?: 'sm' | 'md' | 'lg'
+  showStatus?: boolean
+  overrideUrl?: string | null
+  overrideName?: string
+}) {
+  const url = overrideUrl !== undefined ? overrideUrl : profile.avatarUrl
+  const initials = overrideName
+    ? overrideName.trim().slice(0, 2).toUpperCase() || profile.initials
+    : profile.initials
+  return (
+    <span className={cn('avatar', `avatar-${size}`)} aria-hidden>
+      {url ? <img src={url} alt='' /> : <span>{initials}</span>}
+      {showStatus && (
+        <span className={cn('avatar-status', !profile.emailConfirmed && 'is-unverified')} />
+      )}
+    </span>
+  )
+}
+
+/* Sidebar account footer — a premium, minimal identity card. Shows the
+   avatar (+ verification status dot), display name and email, and opens the
+   Account page on click. When the sidebar is collapsed it degrades to a
+   single centered avatar button. Replaces the old plain "Sign out" row;
+   sign-out now lives on the Account page (and remains in the command flows). */
+function SidebarProfile() {
+  const ui = useUI()
+  const profile = useProfile()
+  const navigate = useNavigate()
+  const collapsed = !ui.sidebar
+
+  return (
+    <button
+      type='button'
+      className={cn('profile-card', collapsed && 'is-collapsed')}
+      onClick={() => { ui.set({ mobileNav: false }); navigate('/account') }}
+      title={collapsed ? `${profile.displayName} — Account` : 'Account'}
+      aria-label='Open account settings'
+    >
+      <ProfileAvatar profile={profile} size='sm' showStatus />
+      {!collapsed && (
+        <>
+          <span className='profile-meta'>
+            <span className='profile-name'>{profile.displayName}</span>
+            <span className='profile-email'>{profile.email || 'Signed in'}</span>
+          </span>
+          <ChevronRightIcon className='h-4 w-4 shrink-0 text-zinc-400' />
+        </>
+      )}
+    </button>
+  )
+}
+
 function Sidebar() {
   const ui = useUI()
   const data = useData()
@@ -2378,18 +2476,11 @@ function Sidebar() {
         )}
       </div>
 
-      {/* Account footer — sign out reuses the existing nav-item styling so it
-          matches the rest of the sidebar. On sign-out, the auth subscription
-          clears the session and RequireAuth redirects to /signin. */}
+      {/* Account footer — a premium identity card that opens the Account page.
+          Sign-out now lives inside Account (and the command palette), keeping
+          this footer focused on identity rather than a bare action row. */}
       <div className='border-t p-2'>
-        <button
-          className='nav-item w-full'
-          onClick={() => { ui.set({ mobileNav: false }); void handleSignOut() }}
-          title='Sign out'
-        >
-          <LogOut className='h-4 w-4 text-zinc-500' />
-          {ui.sidebar && <span className='flex-1 truncate text-left'>Sign out</span>}
-        </button>
+        <SidebarProfile />
       </div>
 
       {creatingProject && (
@@ -3346,9 +3437,14 @@ function SettingsContent({ compact = false }: { compact?: boolean }) {
         </Card>
       )}
       <Card className={cn(compact && '!p-4')}>
-        <div className='text-sm font-semibold mb-3'>Local data</div>
+        <div className='text-sm font-semibold mb-1'>Local cache</div>
+        <div className='mb-3 text-xs text-zinc-500'>
+          Your tasks, projects and tags live in your account on Supabase. This
+          only clears cached view preferences on this device — your data is
+          never affected.
+        </div>
         <button className='btn btn-secondary' onClick={() => { localStorage.removeItem('orbit-data'); location.reload() }}>
-          <Trash2 className='h-4 w-4' />Reset demo data
+          <Trash2 className='h-4 w-4' />Clear local cache
         </button>
       </Card>
     </div>
@@ -3356,9 +3452,425 @@ function SettingsContent({ compact = false }: { compact?: boolean }) {
 }
 
 function SettingsPage() {
+  const navigate = useNavigate()
+  const profile = useProfile()
   return (
     <div className='p-6 max-w-3xl overflow-y-auto h-full'>
+      {/* Account entry — links to the dedicated Account Settings page. */}
+      <button
+        type='button'
+        onClick={() => navigate('/account')}
+        className='panel w-full mb-6 flex items-center gap-3 p-3 text-left hover:shadow-sm transition'
+      >
+        <ProfileAvatar profile={profile} size='sm' showStatus />
+        <div className='min-w-0 flex-1'>
+          <div className='text-sm font-semibold truncate'>{profile.displayName}</div>
+          <div className='text-xs text-zinc-500 truncate'>{profile.email || 'Manage your account'}</div>
+        </div>
+        <span className='text-xs font-medium text-zinc-500 mr-1 hidden sm:inline'>Account</span>
+        <ChevronRightIcon className='h-4 w-4 text-zinc-400' />
+      </button>
       <SettingsContent />
+    </div>
+  )
+}
+
+/* ============================================================
+   ACCOUNT SETTINGS PAGE  (/account)
+   ------------------------------------------------------------
+   A dedicated, premium account center integrated with Supabase Auth:
+     • Hero header — avatar, name, email, verification badge + key meta
+     • Profile — edit display name & avatar URL (mirrors profiles table)
+     • Email — request an email change (Supabase confirmation flow)
+     • Password — change with current-password re-auth, or reset link;
+       OAuth-only accounts see a "secured by provider" notice instead
+     • Sign out
+   Every mutation routes through the typed helpers in auth.tsx and shows
+   inline success/error feedback. Nothing here alters the existing data,
+   sync or auth session flow — it only reads/writes the user's identity.
+   ============================================================ */
+function AccountSection({
+  icon: Icon, title, description, children,
+}: {
+  icon: React.ComponentType<{ className?: string }>
+  title: string
+  description?: string
+  children: React.ReactNode
+}) {
+  return (
+    <Card>
+      <div className='flex items-start gap-3'>
+        <div className='mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-[hsl(var(--muted))] text-[hsl(var(--text-secondary))] dark:bg-[hsl(var(--surface-4))]'>
+          <Icon className='h-4 w-4' />
+        </div>
+        <div className='min-w-0 flex-1'>
+          <div className='text-sm font-semibold'>{title}</div>
+          {description && <div className='mt-0.5 text-xs text-zinc-500'>{description}</div>}
+          <div className='mt-4'>{children}</div>
+        </div>
+      </div>
+    </Card>
+  )
+}
+
+function ProfileSection({ profile }: { profile: UserProfile }) {
+  const [name, setName] = useState(profile.displayName)
+  const [avatar, setAvatar] = useState(profile.avatarUrl ?? '')
+  const [saving, setSaving] = useState(false)
+  const [note, setNote] = useState<{ kind: 'success' | 'error'; msg: string } | null>(null)
+
+  const dirty = name.trim() !== profile.displayName || (avatar.trim() || null) !== profile.avatarUrl
+  const canSave = dirty && name.trim().length > 0 && !saving
+
+  async function onSave(e: React.FormEvent) {
+    e.preventDefault()
+    if (!canSave) return
+    setSaving(true)
+    setNote(null)
+    const { error } = await updateProfile({ displayName: name, avatarUrl: avatar.trim() || null })
+    setSaving(false)
+    setNote(error ? { kind: 'error', msg: error } : { kind: 'success', msg: 'Profile updated.' })
+  }
+
+  return (
+    <AccountSection icon={User} title='Profile' description='Your name and picture across Orbit.'>
+      <form onSubmit={onSave} className='space-y-4'>
+        <div className='flex items-center gap-4'>
+          <ProfileAvatar
+            profile={profile}
+            size='lg'
+            overrideUrl={avatar.trim() || null}
+            overrideName={name}
+          />
+          <div className='min-w-0 flex-1'>
+            <label className='field-label' htmlFor='acct-avatar'>Avatar URL</label>
+            <input
+              id='acct-avatar'
+              type='url'
+              className='input'
+              placeholder='https://…/avatar.png'
+              value={avatar}
+              onChange={(e) => setAvatar(e.target.value)}
+            />
+          </div>
+        </div>
+
+        <div>
+          <label className='field-label' htmlFor='acct-name'>Display name</label>
+          <input
+            id='acct-name'
+            type='text'
+            className='input'
+            maxLength={80}
+            placeholder='Your name'
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+          />
+        </div>
+
+        {note && (
+          <div className={cn('form-note', note.kind === 'error' ? 'is-error' : 'is-success')}>
+            {note.kind === 'error' ? <AlertCircle className='h-4 w-4' /> : <CheckCircle2 className='h-4 w-4' />}
+            <span>{note.msg}</span>
+          </div>
+        )}
+
+        <div className='flex justify-end'>
+          <button type='submit' className='btn btn-primary' disabled={!canSave}>
+            {saving ? <Loader2 className='h-4 w-4 animate-spin' /> : <Save className='h-4 w-4' />}
+            Save changes
+          </button>
+        </div>
+      </form>
+    </AccountSection>
+  )
+}
+
+function EmailSection({ profile }: { profile: UserProfile }) {
+  const [email, setEmail] = useState(profile.email)
+  const [saving, setSaving] = useState(false)
+  const [note, setNote] = useState<{ kind: 'success' | 'error'; msg: string } | null>(null)
+
+  const canSave = email.trim().length > 0 && email.trim() !== profile.email && !saving
+
+  async function onSave(e: React.FormEvent) {
+    e.preventDefault()
+    if (!canSave) return
+    setSaving(true)
+    setNote(null)
+    const { error } = await updateEmail(email)
+    setSaving(false)
+    setNote(error
+      ? { kind: 'error', msg: error }
+      : { kind: 'success', msg: 'Confirmation link sent. Check your new inbox to finish the change.' })
+  }
+
+  return (
+    <AccountSection icon={Mail} title='Email address' description='Used to sign in and for account notices.'>
+      <form onSubmit={onSave} className='space-y-4'>
+        {!profile.emailConfirmed && profile.email && (
+          <div className='form-note is-info'>
+            <AlertCircle className='h-4 w-4' />
+            <span>Your current email isn’t verified yet. Check your inbox for the confirmation link.</span>
+          </div>
+        )}
+        <div>
+          <label className='field-label' htmlFor='acct-email'>Email</label>
+          <input
+            id='acct-email'
+            type='email'
+            className='input'
+            placeholder='you@example.com'
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+          />
+        </div>
+        {note && (
+          <div className={cn('form-note', note.kind === 'error' ? 'is-error' : 'is-success')}>
+            {note.kind === 'error' ? <AlertCircle className='h-4 w-4' /> : <CheckCircle2 className='h-4 w-4' />}
+            <span>{note.msg}</span>
+          </div>
+        )}
+        <div className='flex justify-end'>
+          <button type='submit' className='btn btn-primary' disabled={!canSave}>
+            {saving ? <Loader2 className='h-4 w-4 animate-spin' /> : <Mail className='h-4 w-4' />}
+            Update email
+          </button>
+        </div>
+      </form>
+    </AccountSection>
+  )
+}
+
+function PasswordSection({ profile }: { profile: UserProfile }) {
+  const [current, setCurrent] = useState('')
+  const [next, setNext] = useState('')
+  const [confirm, setConfirm] = useState('')
+  const [show, setShow] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [resetting, setResetting] = useState(false)
+  const [note, setNote] = useState<{ kind: 'success' | 'error' | 'info'; msg: string } | null>(null)
+
+  const mismatch = confirm.length > 0 && next !== confirm
+  const canSave = next.length >= 6 && next === confirm && !saving
+
+  async function onSave(e: React.FormEvent) {
+    e.preventDefault()
+    if (!canSave) return
+    setSaving(true)
+    setNote(null)
+    const { error } = await updatePassword({
+      newPassword: next,
+      currentPassword: current || undefined,
+      email: profile.email || undefined,
+    })
+    setSaving(false)
+    if (error) {
+      setNote({ kind: 'error', msg: error })
+    } else {
+      setNote({ kind: 'success', msg: 'Password updated.' })
+      setCurrent(''); setNext(''); setConfirm('')
+    }
+  }
+
+  async function onReset() {
+    if (!profile.email || resetting) return
+    setResetting(true)
+    setNote(null)
+    const { error } = await sendPasswordReset(profile.email)
+    setResetting(false)
+    setNote(error
+      ? { kind: 'error', msg: error }
+      : { kind: 'info', msg: `Reset link sent to ${profile.email}.` })
+  }
+
+  // OAuth-only accounts don't have a password to change.
+  if (!profile.hasPassword) {
+    return (
+      <AccountSection icon={ShieldCheck} title='Password' description='How you secure your account.'>
+        <div className='form-note is-info'>
+          <ShieldCheck className='h-4 w-4' />
+          <span>
+            You sign in with <b className='capitalize'>{profile.provider}</b>. Your password is
+            managed securely by your provider.
+          </span>
+        </div>
+      </AccountSection>
+    )
+  }
+
+  return (
+    <AccountSection icon={KeyRound} title='Password' description='Change your password or request a reset link.'>
+      <form onSubmit={onSave} className='space-y-4'>
+        <div>
+          <label className='field-label' htmlFor='acct-current'>Current password</label>
+          <div className='relative'>
+            <input
+              id='acct-current'
+              type={show ? 'text' : 'password'}
+              className='input pr-10'
+              autoComplete='current-password'
+              placeholder='Enter current password'
+              value={current}
+              onChange={(e) => setCurrent(e.target.value)}
+            />
+            <button
+              type='button'
+              className='absolute right-2 top-1/2 -translate-y-1/2 rounded-lg p-1.5 text-zinc-400 hover:bg-[hsl(var(--accent))]'
+              onClick={() => setShow((s) => !s)}
+              aria-label={show ? 'Hide passwords' : 'Show passwords'}
+              tabIndex={-1}
+            >
+              {show ? <EyeOff className='h-4 w-4' /> : <Eye className='h-4 w-4' />}
+            </button>
+          </div>
+        </div>
+        <div className='grid sm:grid-cols-2 gap-3'>
+          <div>
+            <label className='field-label' htmlFor='acct-next'>New password</label>
+            <input
+              id='acct-next'
+              type={show ? 'text' : 'password'}
+              className='input'
+              autoComplete='new-password'
+              minLength={6}
+              placeholder='At least 6 characters'
+              value={next}
+              onChange={(e) => setNext(e.target.value)}
+            />
+          </div>
+          <div>
+            <label className='field-label' htmlFor='acct-confirm'>Confirm new password</label>
+            <input
+              id='acct-confirm'
+              type={show ? 'text' : 'password'}
+              className='input'
+              autoComplete='new-password'
+              minLength={6}
+              placeholder='Re-enter new password'
+              value={confirm}
+              onChange={(e) => setConfirm(e.target.value)}
+            />
+          </div>
+        </div>
+
+        {mismatch && (
+          <div className='form-note is-error'>
+            <AlertCircle className='h-4 w-4' />
+            <span>Passwords don’t match.</span>
+          </div>
+        )}
+        {note && (
+          <div className={cn('form-note', note.kind === 'error' ? 'is-error' : note.kind === 'success' ? 'is-success' : 'is-info')}>
+            {note.kind === 'error' ? <AlertCircle className='h-4 w-4' /> : <CheckCircle2 className='h-4 w-4' />}
+            <span>{note.msg}</span>
+          </div>
+        )}
+
+        <div className='flex flex-wrap items-center justify-between gap-2'>
+          <button
+            type='button'
+            className='btn btn-ghost !px-2 text-xs'
+            onClick={onReset}
+            disabled={resetting || !profile.email}
+          >
+            {resetting ? <Loader2 className='h-3.5 w-3.5 animate-spin' /> : <Mail className='h-3.5 w-3.5' />}
+            Email me a reset link
+          </button>
+          <button type='submit' className='btn btn-primary' disabled={!canSave}>
+            {saving ? <Loader2 className='h-4 w-4 animate-spin' /> : <KeyRound className='h-4 w-4' />}
+            Update password
+          </button>
+        </div>
+      </form>
+    </AccountSection>
+  )
+}
+
+function AccountPage() {
+  const profile = useProfile()
+  const navigate = useNavigate()
+  const [signingOut, setSigningOut] = useState(false)
+
+  const fmtDate = (iso: string | null) => {
+    if (!iso) return '—'
+    try { return format(parseISO(iso), 'MMM d, yyyy') } catch { return '—' }
+  }
+
+  async function onSignOut() {
+    if (signingOut) return
+    setSigningOut(true)
+    // handleSignOut flushes pending writes, disarms sync, clears local data
+    // and history, then ends the Supabase session (unchanged behavior).
+    await handleSignOut()
+    // RequireAuth will redirect to /signin once the session clears, but push
+    // there proactively so there's no flash of a protected page.
+    navigate('/signin', { replace: true })
+  }
+
+  return (
+    <div className='p-6 max-w-3xl overflow-y-auto h-full'>
+      {/* Back link (matches the app's minimal, quiet navigation affordances). */}
+      <button
+        type='button'
+        onClick={() => navigate('/settings')}
+        className='btn btn-ghost !px-2 mb-4 text-sm'
+      >
+        <ArrowLeft className='h-4 w-4' /> Settings
+      </button>
+
+      {/* Hero header */}
+      <div className='account-hero mb-6'>
+        <div className='account-hero-banner' />
+        <div className='account-hero-body'>
+          <ProfileAvatar profile={profile} size='lg' showStatus />
+          <div className='account-hero-ident'>
+            <div className='flex items-center gap-2 flex-wrap'>
+              <h1 className='text-lg font-bold tracking-tight truncate'>{profile.displayName}</h1>
+              <span className={cn('account-badge', profile.emailConfirmed ? 'is-verified' : 'is-unverified')}>
+                {profile.emailConfirmed
+                  ? <><CheckCircle2 className='h-3 w-3' /> Verified</>
+                  : <><AlertCircle className='h-3 w-3' /> Unverified</>}
+              </span>
+            </div>
+            <div className='mt-0.5 text-sm text-zinc-500 truncate'>{profile.email}</div>
+          </div>
+        </div>
+        <div className='account-meta-grid'>
+          <div className='account-meta-item'>
+            <div className='k'>Sign-in method</div>
+            <div className='v capitalize'>{profile.provider}</div>
+          </div>
+          <div className='account-meta-item'>
+            <div className='k'>Member since</div>
+            <div className='v'>{fmtDate(profile.createdAt)}</div>
+          </div>
+          <div className='account-meta-item'>
+            <div className='k'>Last sign-in</div>
+            <div className='v'>{fmtDate(profile.lastSignInAt)}</div>
+          </div>
+        </div>
+      </div>
+
+      <div className='space-y-6'>
+        <ProfileSection profile={profile} />
+        <EmailSection profile={profile} />
+        <PasswordSection profile={profile} />
+
+        {/* Sign out */}
+        <Card>
+          <div className='flex items-center justify-between gap-3 flex-wrap'>
+            <div className='min-w-0'>
+              <div className='text-sm font-semibold'>Sign out</div>
+              <div className='mt-0.5 text-xs text-zinc-500'>End your session on this device.</div>
+            </div>
+            <button className='btn btn-secondary' onClick={onSignOut} disabled={signingOut}>
+              {signingOut ? <Loader2 className='h-4 w-4 animate-spin' /> : <LogOut className='h-4 w-4' />}
+              Sign out
+            </button>
+          </div>
+        </Card>
+      </div>
     </div>
   )
 }
@@ -5893,6 +6405,7 @@ function Layout() {
             <Route path='/archive' element={<ArchivePage />} />
             <Route path='/tags' element={<TagsPage />} />
             <Route path='/settings' element={<SettingsPage />} />
+            <Route path='/account' element={<AccountPage />} />
             {/* Catch-all → never show a 404; route to /today */}
             <Route path='*' element={<Navigate to='/today' replace />} />
           </Routes>
