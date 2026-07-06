@@ -2,10 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { NavLink, Navigate, Route, Routes, useNavigate, useParams, useLocation } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { SignInPage, SignUpPage } from './AuthPages'
-import {
-  useAuthBootstrap, useAuthLoading, useIsAuthenticated, useSession, useProfile, getProfile, signOut,
-  updateProfile, updatePassword, updateEmail, sendPasswordReset, initialsFrom,
-} from './auth'
+import { useAuthBootstrap, useAuthLoading, useIsAuthenticated, useSession, useProfile, getProfile, signOut } from './auth'
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import { newId } from './data/id'
@@ -31,8 +28,7 @@ import {
   Sparkles, Target, Rocket, BookOpen, Heart, Briefcase, Circle, PauseCircle, Ban, PlayCircle, CalendarClock,
   Copy, Link as LinkIcon, ExternalLink, FolderInput, Tag as TagIcon,
   Image as ImageIcon, MapPinned, ArrowUp, ArrowDown, Move, SlidersHorizontal,
-  Undo2, Redo2, RotateCcw, LogOut, User as UserIcon, Mail, KeyRound, ShieldCheck,
-  Check, Loader2, BadgeCheck, Camera, Lock, Eye, EyeOff
+  Undo2, Redo2, RotateCcw, LogOut
 } from 'lucide-react'
 import { createPortal } from 'react-dom'
 
@@ -735,19 +731,8 @@ let lastSyncSnapshot: Snapshot = { tasks: [], projects: [], tags: [] }
 const asSnapshot = (s: { tasks: Task[]; projects: Project[]; tags: Tag[] }): Snapshot =>
   ({ tasks: s.tasks, projects: s.projects, tags: s.tags })
 
-/**
- * Enable persistence for a user and set the baseline (already-loaded) data.
- *
- * Idempotent per user: if sync is already armed for `userId` we do NOT reset
- * the baseline. This is critical — a React Query refetch (or a StrictMode
- * double-invoked effect) would otherwise overwrite `lastSyncSnapshot` with a
- * possibly-stale server copy while the store already holds newer local edits,
- * causing the next diff to re-insert rows the server already has (duplicates)
- * or clobber unsynced changes. Arming exactly once guarantees a user's data is
- * loaded a single time and never recreated on subsequent logins/refetches.
- */
+/** Enable persistence for a user and set the baseline (already-loaded) data. */
 function beginSync(userId: string, baseline: Snapshot) {
-  if (syncUserId === userId) return
   syncUserId = userId
   lastSyncSnapshot = baseline
 }
@@ -801,14 +786,6 @@ function useBootstrap() {
   const session = useSession()
   const userId = session?.user.id
 
-  // Remembers which user we've already hydrated so the (userId, data) effect
-  // is a strict no-op on any re-run — StrictMode's double-invoke, a React
-  // Query refetch, or a re-render. Combined with the `booted` guard inside
-  // `hydrate` and the idempotency of `beginSync`, this guarantees a user's
-  // Supabase data loads EXACTLY once per session and is never re-applied,
-  // recreated or duplicated on subsequent logins.
-  const hydratedFor = useRef<string | null>(null)
-
   const q = useQuery({
     queryKey: ['bootstrap', userId],
     enabled: !!userId,
@@ -821,8 +798,6 @@ function useBootstrap() {
 
   useEffect(() => {
     if (!q.data || !userId) return
-    if (hydratedFor.current === userId) return
-    hydratedFor.current = userId
     // Arm the sync bridge with the loaded data as baseline BEFORE hydrating,
     // so hydrate()'s state change is recognized as already-persisted.
     beginSync(userId, q.data)
@@ -2256,35 +2231,20 @@ function UndoRedoButtons() {
    user id/name so it stays stable across renders and sessions.
    ============================================================ */
 const AVATAR_COLORS = ['#6366f1', '#0ea5e9', '#10b981', '#f59e0b', '#f43f5e', '#8b5cf6', '#ec4899', '#14b8a6']
-/**
- * The signed-in user's avatar. Renders the provided image when available,
- * otherwise a deterministic gradient circle with their initials (color seeded
- * from the user id so it stays stable across sessions).
- *
- * `overrideUrl` / `overrideName` let the Account profile editor preview a
- * not-yet-saved avatar/name without touching the session.
- */
-function ProfileAvatar({ className, overrideUrl, overrideName }: {
-  className?: string
-  overrideUrl?: string | null
-  overrideName?: string
-}) {
+function ProfileAvatar({ className }: { className?: string }) {
   const profile = useProfile()
-  const url = overrideUrl !== undefined ? overrideUrl : profile.avatarUrl
-  const name = (overrideName ?? profile.displayName) || profile.displayName
-  const initials = overrideName !== undefined ? initialsFrom(overrideName) : profile.initials
   const hue = useMemo(() => {
-    const seed = profile.id || profile.email || name
+    const seed = profile.id || profile.email || profile.displayName
     let h = 0
     for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) >>> 0
     return AVATAR_COLORS[h % AVATAR_COLORS.length]
-  }, [profile.id, profile.email, name])
+  }, [profile.id, profile.email, profile.displayName])
 
-  if (url) {
+  if (profile.avatarUrl) {
     return (
       <img
-        src={url}
-        alt={name}
+        src={profile.avatarUrl}
+        alt={profile.displayName}
         className={cn('rounded-full object-cover ring-1 ring-black/5 dark:ring-white/10', className)}
       />
     )
@@ -2295,7 +2255,7 @@ function ProfileAvatar({ className, overrideUrl, overrideName }: {
       style={{ background: `linear-gradient(135deg, ${hue}, ${hue}cc)` }}
       aria-hidden
     >
-      {initials}
+      {profile.initials}
     </span>
   )
 }
@@ -2392,36 +2352,20 @@ function Sidebar() {
         )}
       </div>
 
-      {/* Account footer — a premium, minimal identity card sourced from the
-          Supabase session. The card itself navigates to the dedicated Account
-          settings page; the trailing icon signs out. When the sidebar is
-          collapsed it reduces to a single avatar button that opens Account. */}
+      {/* Account footer — shows the signed-in user's profile (avatar/initials,
+          display name and email) sourced from the Supabase session, plus a
+          sign-out control. On sign-out, the auth subscription clears the
+          session and RequireAuth redirects to /signin. */}
       <div className='border-t p-2'>
         {ui.sidebar ? (
-          <div className='profile-card group'>
-            <NavLink
-              to='/account'
-              className='flex min-w-0 flex-1 items-center gap-2.5 rounded-xl outline-none'
-              onClick={() => ui.set({ mobileNav: false })}
-              title='Account settings'
-            >
-              <div className='relative shrink-0'>
-                <ProfileAvatar className='h-9 w-9 text-sm' />
-                <span
-                  className={cn(
-                    'absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full ring-2 ring-[hsl(var(--background))]',
-                    profile.emailConfirmed ? 'bg-emerald-500' : 'bg-amber-500',
-                  )}
-                  aria-hidden
-                />
-              </div>
-              <div className='min-w-0 flex-1'>
-                <div className='truncate text-sm font-semibold leading-tight'>{profile.displayName}</div>
-                {profile.email && <div className='truncate text-[11px] text-zinc-500 leading-tight'>{profile.email}</div>}
-              </div>
-            </NavLink>
+          <div className='flex items-center gap-2.5 rounded-xl px-2 py-2'>
+            <ProfileAvatar className='h-9 w-9 text-sm shrink-0' />
+            <div className='min-w-0 flex-1'>
+              <div className='truncate text-sm font-medium'>{profile.displayName}</div>
+              {profile.email && <div className='truncate text-[11px] text-zinc-500'>{profile.email}</div>}
+            </div>
             <button
-              className='rounded-lg p-2 text-zinc-400 transition hover:bg-[hsl(var(--muted))] hover:text-rose-600'
+              className='rounded-lg p-2 text-zinc-500 transition hover:bg-[hsl(var(--muted))] hover:text-rose-600'
               onClick={() => { ui.set({ mobileNav: false }); void handleSignOut() }}
               title='Sign out'
               aria-label='Sign out'
@@ -2430,15 +2374,14 @@ function Sidebar() {
             </button>
           </div>
         ) : (
-          <NavLink
-            to='/account'
+          <button
             className='nav-item w-full justify-center'
-            onClick={() => ui.set({ mobileNav: false })}
-            title={`Account (${profile.displayName})`}
-            aria-label='Account settings'
+            onClick={() => { ui.set({ mobileNav: false }); void handleSignOut() }}
+            title={`Sign out (${profile.displayName})`}
+            aria-label='Sign out'
           >
             <ProfileAvatar className='h-7 w-7 text-xs' />
-          </NavLink>
+          </button>
         )}
       </div>
 
@@ -3395,425 +3338,12 @@ function SettingsContent({ compact = false }: { compact?: boolean }) {
           </div>
         </Card>
       )}
-      {!compact && (
-        <Card>
-          <div className='flex items-start gap-3'>
-            <div className='flex-1'>
-              <div className='text-sm font-semibold flex items-center gap-2'>
-                <UserIcon className='h-4 w-4 text-zinc-500' />Account
-              </div>
-              <div className='mt-1 text-xs text-zinc-500'>
-                Manage your profile, password, email address and sign-out from the
-                dedicated Account settings page.
-              </div>
-            </div>
-            <NavLink to='/account' className='btn btn-secondary shrink-0'>
-              Open account
-              <ChevronRight className='h-4 w-4' />
-            </NavLink>
-          </div>
-        </Card>
-      )}
-    </div>
-  )
-}
-
-/* ============================================================
-   Account settings
-   ------------------------------------------------------------
-   A dedicated, premium page for everything tied to the Supabase Auth
-   identity: profile (name + avatar), password, email and sign-out. It is
-   intentionally separate from app *preferences* (/settings) so identity and
-   security controls live in one focused, uncluttered place.
-
-   All mutations go through the thin helpers in auth.tsx; the UI reads the
-   current profile reactively from the session, so a successful change is
-   reflected the moment Supabase emits the updated user (no manual refetch).
-   ============================================================ */
-
-/** Small reusable section shell for the account page. */
-function AccountSection({
-  icon: Icon, title, description, children,
-}: {
-  icon: React.ComponentType<{ className?: string }>
-  title: string
-  description?: string
-  children: React.ReactNode
-}) {
-  return (
-    <section className='panel p-5 sm:p-6'>
-      <div className='flex items-start gap-3 mb-5'>
-        <span className='flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-[hsl(var(--muted))] text-zinc-500'>
-          <Icon className='h-4 w-4' />
-        </span>
-        <div className='min-w-0'>
-          <h2 className='text-sm font-semibold tracking-tight'>{title}</h2>
-          {description && <p className='mt-0.5 text-xs text-zinc-500 leading-relaxed'>{description}</p>}
-        </div>
-      </div>
-      {children}
-    </section>
-  )
-}
-
-/** Inline status message (success / error) with graceful auto-dismiss styling. */
-function StatusNote({ kind, children }: { kind: 'success' | 'error'; children: React.ReactNode }) {
-  const ok = kind === 'success'
-  return (
-    <div
-      className={cn(
-        'flex items-start gap-2 rounded-xl border px-3 py-2.5 text-sm',
-        ok
-          ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
-          : 'border-red-500/30 bg-red-500/10 text-red-600 dark:text-red-400',
-      )}
-    >
-      {ok ? <CheckCircle2 className='mt-0.5 h-4 w-4 shrink-0' /> : <AlertCircle className='mt-0.5 h-4 w-4 shrink-0' />}
-      <span>{children}</span>
-    </div>
-  )
-}
-
-/* ---- Profile section: display name + avatar URL ---- */
-function ProfileSettingsSection() {
-  const profile = useProfile()
-  const [name, setName] = useState(profile.displayName)
-  const [avatar, setAvatar] = useState(profile.avatarUrl ?? '')
-  const [saving, setSaving] = useState(false)
-  const [note, setNote] = useState<{ kind: 'success' | 'error'; msg: string } | null>(null)
-
-  // Keep local fields in sync if the session profile changes elsewhere.
-  useEffect(() => { setName(profile.displayName); setAvatar(profile.avatarUrl ?? '') }, [profile.displayName, profile.avatarUrl])
-
-  const dirty = name.trim() !== profile.displayName || (avatar.trim() || null) !== (profile.avatarUrl ?? null)
-  const canSave = dirty && name.trim().length > 0 && !saving
-
-  async function onSave() {
-    if (!canSave) return
-    setSaving(true); setNote(null)
-    const res = await updateProfile({ displayName: name, avatarUrl: avatar.trim() || null })
-    setSaving(false)
-    setNote(res.error ? { kind: 'error', msg: res.error } : { kind: 'success', msg: 'Profile updated.' })
-  }
-
-  return (
-    <AccountSection icon={UserIcon} title='Profile' description='Your name and avatar appear across the app and on anything you author.'>
-      <div className='flex flex-col sm:flex-row sm:items-center gap-4 mb-5'>
-        <ProfileAvatar className='h-16 w-16 text-xl shrink-0' overrideUrl={avatar.trim() || null} overrideName={name} />
-        <div className='flex-1 min-w-0'>
-          <label htmlFor='acct-avatar' className='text-xs font-medium text-zinc-500'>Avatar image URL</label>
-          <div className='relative mt-1.5'>
-            <Camera className='pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-400' />
-            <input
-              id='acct-avatar'
-              type='url'
-              className='input pl-9'
-              placeholder='https://…/avatar.png (optional)'
-              value={avatar}
-              onChange={(e) => setAvatar(e.target.value)}
-              disabled={saving}
-            />
-          </div>
-          <p className='mt-1.5 text-[11px] text-zinc-400'>Leave empty to use your colored initials.</p>
-        </div>
-      </div>
-
-      <div className='space-y-1.5'>
-        <label htmlFor='acct-name' className='text-xs font-medium text-zinc-500'>Display name</label>
-        <input
-          id='acct-name'
-          type='text'
-          className='input'
-          placeholder='Your name'
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          disabled={saving}
-          maxLength={80}
-        />
-      </div>
-
-      {note && <div className='mt-4'><StatusNote kind={note.kind}>{note.msg}</StatusNote></div>}
-
-      <div className='mt-5 flex justify-end'>
-        <button className='btn btn-primary' onClick={onSave} disabled={!canSave}>
-          {saving ? <Loader2 className='h-4 w-4 animate-spin' /> : <Check className='h-4 w-4' />}
-          {saving ? 'Saving…' : 'Save changes'}
+      <Card className={cn(compact && '!p-4')}>
+        <div className='text-sm font-semibold mb-3'>Local data</div>
+        <button className='btn btn-secondary' onClick={() => { localStorage.removeItem('orbit-data'); location.reload() }}>
+          <Trash2 className='h-4 w-4' />Reset demo data
         </button>
-      </div>
-    </AccountSection>
-  )
-}
-
-/* ---- Email section ---- */
-function EmailSettingsSection() {
-  const profile = useProfile()
-  const [email, setEmail] = useState(profile.email)
-  const [saving, setSaving] = useState(false)
-  const [note, setNote] = useState<{ kind: 'success' | 'error'; msg: string } | null>(null)
-
-  useEffect(() => { setEmail(profile.email) }, [profile.email])
-
-  const dirty = email.trim().toLowerCase() !== profile.email.toLowerCase()
-  const valid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())
-  const canSave = dirty && valid && !saving
-
-  async function onSave() {
-    if (!canSave) return
-    setSaving(true); setNote(null)
-    const res = await updateEmail(email)
-    setSaving(false)
-    setNote(
-      res.error
-        ? { kind: 'error', msg: res.error }
-        : { kind: 'success', msg: 'Confirmation link sent. Check your inbox to finish changing your email.' },
-    )
-  }
-
-  return (
-    <AccountSection icon={Mail} title='Email address' description='Changing your email requires confirmation via a link sent to the new address.'>
-      <div className='space-y-1.5'>
-        <label htmlFor='acct-email' className='text-xs font-medium text-zinc-500'>Email</label>
-        <div className='relative'>
-          <Mail className='pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-400' />
-          <input
-            id='acct-email'
-            type='email'
-            className='input pl-9'
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            disabled={saving}
-            autoComplete='email'
-          />
-        </div>
-        {!profile.emailConfirmed && (
-          <p className='mt-1.5 flex items-center gap-1.5 text-[11px] text-amber-600 dark:text-amber-400'>
-            <AlertCircle className='h-3.5 w-3.5' /> Your current email is not confirmed yet.
-          </p>
-        )}
-      </div>
-
-      {note && <div className='mt-4'><StatusNote kind={note.kind}>{note.msg}</StatusNote></div>}
-
-      <div className='mt-5 flex justify-end'>
-        <button className='btn btn-primary' onClick={onSave} disabled={!canSave}>
-          {saving ? <Loader2 className='h-4 w-4 animate-spin' /> : <Mail className='h-4 w-4' />}
-          {saving ? 'Sending…' : 'Update email'}
-        </button>
-      </div>
-    </AccountSection>
-  )
-}
-
-/* ---- Password section ---- */
-function PasswordSettingsSection() {
-  const profile = useProfile()
-  const [current, setCurrent] = useState('')
-  const [next, setNext] = useState('')
-  const [confirm, setConfirm] = useState('')
-  const [show, setShow] = useState(false)
-  const [saving, setSaving] = useState(false)
-  const [resetting, setResetting] = useState(false)
-  const [note, setNote] = useState<{ kind: 'success' | 'error'; msg: string } | null>(null)
-
-  const mismatch = confirm.length > 0 && next !== confirm
-  const canSave = next.length >= 6 && next === confirm && !!current && !saving
-
-  async function onSave() {
-    if (!canSave) return
-    setSaving(true); setNote(null)
-    const res = await updatePassword({ newPassword: next, currentPassword: current, email: profile.email })
-    setSaving(false)
-    if (res.error) { setNote({ kind: 'error', msg: res.error }); return }
-    setNote({ kind: 'success', msg: 'Password updated successfully.' })
-    setCurrent(''); setNext(''); setConfirm('')
-  }
-
-  async function onSendReset() {
-    if (!profile.email || resetting) return
-    setResetting(true); setNote(null)
-    const res = await sendPasswordReset(profile.email)
-    setResetting(false)
-    setNote(
-      res.error
-        ? { kind: 'error', msg: res.error }
-        : { kind: 'success', msg: 'Password reset link sent to your email.' },
-    )
-  }
-
-  return (
-    <AccountSection icon={KeyRound} title='Password' description='Choose a strong password of at least 6 characters.'>
-      <div className='space-y-4'>
-        <div className='space-y-1.5'>
-          <label htmlFor='acct-current' className='text-xs font-medium text-zinc-500'>Current password</label>
-          <div className='relative'>
-            <Lock className='pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-400' />
-            <input
-              id='acct-current'
-              type={show ? 'text' : 'password'}
-              className='input pl-9 pr-10'
-              placeholder='••••••••'
-              value={current}
-              onChange={(e) => setCurrent(e.target.value)}
-              disabled={saving}
-              autoComplete='current-password'
-            />
-            <button
-              type='button'
-              onClick={() => setShow((v) => !v)}
-              className='absolute right-2 top-1/2 -translate-y-1/2 rounded-lg p-1.5 text-zinc-400 transition hover:bg-[hsl(var(--muted))] hover:text-zinc-600 dark:hover:text-zinc-300'
-              aria-label={show ? 'Hide passwords' : 'Show passwords'}
-              tabIndex={-1}
-            >
-              {show ? <EyeOff className='h-4 w-4' /> : <Eye className='h-4 w-4' />}
-            </button>
-          </div>
-        </div>
-
-        <div className='grid gap-4 sm:grid-cols-2'>
-          <div className='space-y-1.5'>
-            <label htmlFor='acct-new' className='text-xs font-medium text-zinc-500'>New password</label>
-            <input
-              id='acct-new'
-              type={show ? 'text' : 'password'}
-              className='input'
-              placeholder='At least 6 characters'
-              value={next}
-              onChange={(e) => setNext(e.target.value)}
-              disabled={saving}
-              autoComplete='new-password'
-              minLength={6}
-            />
-          </div>
-          <div className='space-y-1.5'>
-            <label htmlFor='acct-confirm' className='text-xs font-medium text-zinc-500'>Confirm new password</label>
-            <input
-              id='acct-confirm'
-              type={show ? 'text' : 'password'}
-              className={cn('input', mismatch && 'ring-1 ring-red-500/50')}
-              placeholder='Re-enter new password'
-              value={confirm}
-              onChange={(e) => setConfirm(e.target.value)}
-              disabled={saving}
-              autoComplete='new-password'
-            />
-          </div>
-        </div>
-        {mismatch && <p className='text-[11px] text-red-500'>Passwords don't match.</p>}
-      </div>
-
-      {note && <div className='mt-4'><StatusNote kind={note.kind}>{note.msg}</StatusNote></div>}
-
-      <div className='mt-5 flex flex-wrap items-center justify-between gap-3'>
-        <button
-          type='button'
-          className='text-xs font-medium text-zinc-500 underline-offset-4 hover:underline disabled:opacity-50'
-          onClick={onSendReset}
-          disabled={resetting || !profile.email}
-        >
-          {resetting ? 'Sending…' : 'Forgot your current password? Email me a reset link'}
-        </button>
-        <button className='btn btn-primary' onClick={onSave} disabled={!canSave}>
-          {saving ? <Loader2 className='h-4 w-4 animate-spin' /> : <KeyRound className='h-4 w-4' />}
-          {saving ? 'Updating…' : 'Update password'}
-        </button>
-      </div>
-    </AccountSection>
-  )
-}
-
-/* ---- Account header + status card ---- */
-function AccountHeaderCard() {
-  const profile = useProfile()
-  const fmt = (iso: string | null) => {
-    if (!iso) return '—'
-    try { return format(parseISO(iso), 'MMM d, yyyy') } catch { return '—' }
-  }
-  return (
-    <div className='panel overflow-hidden'>
-      {/* Gradient banner */}
-      <div
-        className='h-24 sm:h-28'
-        style={{
-          background:
-            'radial-gradient(600px 200px at 15% -20%, rgba(99,102,241,.55), transparent 60%),' +
-            'radial-gradient(500px 220px at 95% 120%, rgba(14,165,233,.45), transparent 55%),' +
-            'linear-gradient(120deg, #4338ca 0%, #6366f1 45%, #0ea5e9 100%)',
-        }}
-      />
-      <div className='px-5 sm:px-6 pb-6'>
-        <div className='-mt-10 sm:-mt-12 flex flex-col sm:flex-row sm:items-end gap-4'>
-          <div className='rounded-full ring-4 ring-[hsl(var(--card))] w-fit'>
-            <ProfileAvatar className='h-20 w-20 text-2xl shrink-0' />
-          </div>
-          <div className='min-w-0 flex-1 sm:pb-1'>
-            <div className='flex items-center gap-2 flex-wrap'>
-              <h1 className='text-xl font-bold tracking-tight truncate'>{profile.displayName}</h1>
-              {profile.emailConfirmed ? (
-                <span className='inline-flex items-center gap-1 rounded-full bg-emerald-500/10 px-2 py-0.5 text-[11px] font-medium text-emerald-600 dark:text-emerald-400 ring-1 ring-emerald-500/20'>
-                  <BadgeCheck className='h-3.5 w-3.5' /> Verified
-                </span>
-              ) : (
-                <span className='inline-flex items-center gap-1 rounded-full bg-amber-500/10 px-2 py-0.5 text-[11px] font-medium text-amber-600 dark:text-amber-400 ring-1 ring-amber-500/20'>
-                  <AlertCircle className='h-3.5 w-3.5' /> Unverified
-                </span>
-              )}
-            </div>
-            <p className='mt-0.5 text-sm text-zinc-500 truncate'>{profile.email}</p>
-          </div>
-          <button className='btn btn-secondary shrink-0' onClick={() => void handleSignOut()}>
-            <LogOut className='h-4 w-4' /> Sign out
-          </button>
-        </div>
-
-        {/* Meta strip */}
-        <div className='mt-6 grid grid-cols-2 sm:grid-cols-3 gap-3'>
-          <div className='rounded-xl bg-[hsl(var(--muted))] px-3.5 py-3'>
-            <div className='text-[11px] uppercase tracking-wide text-zinc-500'>Sign-in method</div>
-            <div className='mt-0.5 text-sm font-medium capitalize'>{profile.provider}</div>
-          </div>
-          <div className='rounded-xl bg-[hsl(var(--muted))] px-3.5 py-3'>
-            <div className='text-[11px] uppercase tracking-wide text-zinc-500'>Member since</div>
-            <div className='mt-0.5 text-sm font-medium'>{fmt(profile.createdAt)}</div>
-          </div>
-          <div className='rounded-xl bg-[hsl(var(--muted))] px-3.5 py-3 col-span-2 sm:col-span-1'>
-            <div className='text-[11px] uppercase tracking-wide text-zinc-500'>Last sign-in</div>
-            <div className='mt-0.5 text-sm font-medium'>{fmt(profile.lastSignInAt)}</div>
-          </div>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-function AccountPage() {
-  const profile = useProfile()
-  return (
-    <div className='h-full overflow-y-auto scrollbar-thin'>
-      <div className='mx-auto max-w-2xl p-4 sm:p-6 lg:p-8 space-y-5'>
-        <div className='flex items-center gap-2 text-xs text-zinc-500'>
-          <NavLink to='/settings' className='hover:text-[hsl(var(--foreground))] hover:underline underline-offset-4'>Settings</NavLink>
-          <ChevronRight className='h-3.5 w-3.5' />
-          <span className='text-[hsl(var(--foreground))] font-medium'>Account</span>
-        </div>
-
-        <AccountHeaderCard />
-        <ProfileSettingsSection />
-        <EmailSettingsSection />
-        {profile.hasPassword ? (
-          <PasswordSettingsSection />
-        ) : (
-          <AccountSection
-            icon={ShieldCheck}
-            title='Password'
-            description='Your account signs in through an external provider, so there is no password to manage here.'
-          >
-            <div className='rounded-xl bg-[hsl(var(--muted))] px-4 py-3 text-sm text-zinc-500 flex items-center gap-2'>
-              <ShieldCheck className='h-4 w-4 shrink-0' />
-              Secured by <span className='font-medium capitalize text-[hsl(var(--foreground))]'>{profile.provider}</span> sign-in.
-            </div>
-          </AccountSection>
-        )}
-      </div>
+      </Card>
     </div>
   )
 }
@@ -6356,7 +5886,6 @@ function Layout() {
             <Route path='/archive' element={<ArchivePage />} />
             <Route path='/tags' element={<TagsPage />} />
             <Route path='/settings' element={<SettingsPage />} />
-            <Route path='/account' element={<AccountPage />} />
             {/* Catch-all → never show a 404; route to /today */}
             <Route path='*' element={<Navigate to='/today' replace />} />
           </Routes>
