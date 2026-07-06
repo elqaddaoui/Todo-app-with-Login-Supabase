@@ -2,9 +2,14 @@ import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { NavLink, Navigate, Route, Routes, useNavigate, useParams, useLocation } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { SignInPage, SignUpPage } from './AuthPages'
-import { useAuthBootstrap, useAuthLoading, useIsAuthenticated, signOut } from './auth'
+import { useAuthBootstrap, useAuthLoading, useIsAuthenticated, useSession, signOut } from './auth'
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
+import { newId } from './data/id'
+import { loadBootstrap, loadSettings } from './data/load'
+import { diffAndPersist, setSyncErrorHandler, flushSync, type Snapshot } from './data/sync'
+import { persistSettings, setSettingsUserId } from './data/settings'
+import type { UserSettings } from './data/types'
 import { useForm, Controller } from 'react-hook-form'
 import { z } from 'zod'
 import { zodResolver } from '@hookform/resolvers/zod'
@@ -244,6 +249,41 @@ const useUI = create<{
   { name: 'orbit-ui' }
 ))
 
+/* The subset of `useUI` that is backed by the `user_settings` table. Ephemeral
+   UI flags (open panels, current selection, etc.) stay local-only. */
+const pickSettings = (s: ReturnType<typeof useUI.getState>): UserSettings => ({
+  theme: s.theme, sidebarW: s.sidebarW, detailsW: s.detailsW,
+  compactMode: s.compactMode, dndEnabled: s.dndEnabled,
+  calendarSidePanel: s.calendarSidePanel,
+  undoToastEnabled: s.undoToastEnabled, undoToastDuration: s.undoToastDuration,
+})
+
+/* Persist settings to Supabase whenever a backed field changes. The
+   `persistSettings` helper is a no-op until a user id is set (on login) and
+   debounces rapid changes (slider drags, resize handles). A guard flag
+   suppresses the write that immediately follows loading settings from the DB. */
+let suppressSettingsSync = false
+let lastSettings: UserSettings | null = null
+useUI.subscribe((state) => {
+  if (suppressSettingsSync) return
+  const next = pickSettings(state)
+  if (lastSettings && JSON.stringify(lastSettings) === JSON.stringify(next)) return
+  lastSettings = next
+  persistSettings(next)
+})
+
+/** Apply DB-loaded settings to the local store without echoing them back. */
+function applyLoadedSettings(s: UserSettings) {
+  suppressSettingsSync = true
+  try {
+    useUI.getState().set(s)
+    lastSettings = s
+  } finally {
+    // Release on the next tick so the store update above has settled.
+    setTimeout(() => { suppressSettingsSync = false }, 0)
+  }
+}
+
 /** Global drag-and-drop toggle. Read this anywhere a drag interaction is
  *  wired up; when it returns false the interaction must become inert. */
 const useDndEnabled = () => useUI(s => s.dndEnabled)
@@ -258,6 +298,7 @@ const applyCompactMode = (on: boolean) => {
 const useData = create<{
   booted: boolean; tasks: Task[]; projects: Project[]; tags: Tag[]; filters: FilterState;
   hydrate: (b: Bootstrap) => void;
+  reset: () => void;
   setFilters: (p: Partial<FilterState>) => void; resetFilters: () => void;
   addTask: (p: Partial<Task> & { title: string }) => void;
   updateTask: (id: string, p: Partial<Task>) => void;
@@ -283,17 +324,20 @@ const useData = create<{
   (set, get) => ({
     booted: false, tasks: [], projects: [], tags: [], filters: baseFilter,
     hydrate: (b) => set(s => s.booted ? s : { booted: true, tasks: b.tasks, projects: b.projects, tags: b.tags }),
+    // Clear all in-memory data (used on sign-out so the next account starts
+    // clean and the sync bridge never mixes two users' data).
+    reset: () => set({ booted: false, tasks: [], projects: [], tags: [] }),
     setFilters: (p) => set(s => ({ filters: { ...s.filters, ...p } })),
     resetFilters: () => set({ filters: baseFilter }),
     addTask: (p) => set(s => {
       const newTask: Task = {
-        id: String(Date.now()), title: p.title,
+        id: newId(), title: p.title,
         status: p.status ?? 'not_started', priority: p.priority ?? 'medium', category: p.category ?? 'work',
         projectId: p.projectId, parentId: p.parentId, tags: p.tags ?? [],
         dueDate: p.dueDate, startDate: p.startDate, time: p.time,
         estimatedMinutes: p.estimatedMinutes ?? 60, favorite: p.favorite ?? false,
         description: p.description, checklist: p.checklist ?? [], comments: p.comments ?? [], images: p.images ?? [], attachments: p.attachments ?? [],
-        activity: [{ id: 'a' + Date.now(), type: 'created', message: 'Task created', createdAt: nowIso(), by: 'You' }],
+        activity: [{ id: newId(), type: 'created', message: 'Task created', createdAt: nowIso(), by: 'You' }],
         createdAt: nowIso(), updatedAt: nowIso(), completedAt: undefined, order: s.tasks.length,
       }
       let tasks = [newTask, ...s.tasks]
@@ -368,13 +412,13 @@ const useData = create<{
     }),
     addProject: (name) => set(s => ({
       projects: [...s.projects, {
-        id: 'p' + Date.now(), name, icon: 'FolderKanban',
+        id: newId(), name, icon: 'FolderKanban',
         color: colors[s.projects.length % colors.length],
         documentation: '# ' + name + '\n\nStart writing…', order: s.projects.length,
       }]
     })),
     updateProject: (id, p) => set(s => ({ projects: s.projects.map(x => x.id === id ? { ...x, ...p } : x) })),
-    duplicateProject: (id) => { const p = get().projects.find(x => x.id === id); if (!p) return; const newId = 'p' + Date.now(); set(s => ({ projects: [...s.projects, { ...p, id: newId, name: p.name + ' (copy)', order: s.projects.length }] })) },
+    duplicateProject: (id) => { const p = get().projects.find(x => x.id === id); if (!p) return; const dupId = newId(); set(s => ({ projects: [...s.projects, { ...p, id: dupId, name: p.name + ' (copy)', order: s.projects.length }] })) },
     deleteProject: (id) => set(s => ({
       projects: s.projects.filter(p => p.id !== id),
       tasks: s.tasks.map(t => t.projectId === id ? { ...t, projectId: undefined } : t)
@@ -391,7 +435,7 @@ const useData = create<{
       pos.forEach((p, i) => { if (subset[i]) next[p] = subset[i] })
       return { projects: next.map((p, i) => ({ ...p, order: i })) }
     }),
-    addTag: (name, color) => set(s => ({ tags: [...s.tags, { id: 't' + Date.now(), name, color: color || colors[s.tags.length % colors.length] }] })),
+    addTag: (name, color) => set(s => ({ tags: [...s.tags, { id: newId(), name, color: color || colors[s.tags.length % colors.length] }] })),
     updateTag: (id, p) => set(s => ({ tags: s.tags.map(t => t.id === id ? { ...t, ...p } : t) })),
     deleteTag: (id) => set(s => ({
       tags: s.tags.filter(t => t.id !== id),
@@ -400,14 +444,19 @@ const useData = create<{
   }),
   {
     name: 'orbit-data',
-    version: 3,
+    version: 4,
+    // Task / project / tag data now lives in Supabase (loaded on boot and
+    // synced on every mutation — see the sync engine below). Only the
+    // lightweight *filter* preferences are persisted to localStorage so the
+    // user's chosen search / sort / status filters survive a refresh without
+    // duplicating the authoritative dataset in two places.
+    partialize: (s) => ({ filters: s.filters }) as any,
     // Deep-merge persisted filters onto the current defaults so older saved
     // state (which predates the `sort`/`sortDir` keys) always has every field.
     merge: (persisted, current) => {
       const p = (persisted ?? {}) as any
       return {
         ...current,
-        ...p,
         filters: { ...baseFilter, ...(p.filters ?? {}) },
       }
     },
@@ -689,13 +738,157 @@ const undoAction = () => useHistory.getState().undo()
 const redoAction = () => useHistory.getState().redo()
 
 /* ============================================================
+   Supabase persistence bridge
+   ------------------------------------------------------------
+   The store above stays fully synchronous/optimistic. Here we observe every
+   state transition and push the MINIMAL diff to Supabase in the background
+   (see src/data/sync.ts). Subscribing to the store — rather than wrapping
+   each action — means undo/redo restores (which call `useData.setState`
+   directly) are persisted too, so the database always matches the UI.
+
+   Persistence is gated on `syncUserId`: it is null until the authenticated
+   user's data has been loaded on boot, which prevents (a) writing the empty
+   initial state over real data and (b) echoing the freshly-loaded rows
+   straight back to the server. `hydrate` sets the baseline snapshot.
+   ============================================================ */
+let syncUserId: string | null = null
+let lastSyncSnapshot: Snapshot = { tasks: [], projects: [], tags: [] }
+const asSnapshot = (s: { tasks: Task[]; projects: Project[]; tags: Tag[] }): Snapshot =>
+  ({ tasks: s.tasks, projects: s.projects, tags: s.tags })
+
+/** Enable persistence for a user and set the baseline (already-loaded) data. */
+function beginSync(userId: string, baseline: Snapshot) {
+  syncUserId = userId
+  lastSyncSnapshot = baseline
+}
+/** Disable persistence (e.g. on sign-out) so no cross-user writes leak. */
+function endSync() {
+  syncUserId = null
+  lastSyncSnapshot = { tasks: [], projects: [], tags: [] }
+}
+
+/** Full sign-out: flush pending writes, disarm sync, clear local data +
+ *  history, then end the Supabase session. Ensures no cross-account leakage
+ *  and that the next user boots from a clean slate. */
+async function handleSignOut() {
+  try { await flushSync() } catch { /* best-effort flush */ }
+  endSync()
+  setSettingsUserId(null)
+  useData.getState().reset()
+  useHistory.getState().clear()
+  await signOut()
+}
+
+useData.subscribe((state) => {
+  if (!syncUserId) return
+  const next = asSnapshot(state)
+  // Reference-equality short-circuit: if none of the three arrays changed
+  // (e.g. a filters-only update), there is nothing to persist.
+  if (
+    next.tasks === lastSyncSnapshot.tasks &&
+    next.projects === lastSyncSnapshot.projects &&
+    next.tags === lastSyncSnapshot.tags
+  ) return
+  const prev = lastSyncSnapshot
+  lastSyncSnapshot = next
+  diffAndPersist(prev, next, syncUserId)
+})
+
+/* ============================================================
    Helpers
    ============================================================ */
+/* Re-key the demo `boot` dataset with fresh UUIDs so a brand-new user's
+   first-run content is valid for the UUID columns AND unique per account.
+   All internal references (projectId, parentId, task.tags -> tag ids, and
+   nested child-item ids) are remapped consistently. */
+function seedForNewUser(src: Bootstrap): Bootstrap {
+  const projectIdMap = new Map<string, string>()
+  const tagIdMap = new Map<string, string>()
+  const taskIdMap = new Map<string, string>()
+  src.projects.forEach(p => projectIdMap.set(p.id, newId()))
+  src.tags.forEach(t => tagIdMap.set(t.id, newId()))
+  src.tasks.forEach(t => taskIdMap.set(t.id, newId()))
+
+  const projects: Project[] = src.projects.map(p => ({
+    ...p,
+    id: projectIdMap.get(p.id)!,
+    parentId: p.parentId ? projectIdMap.get(p.parentId) : undefined,
+  }))
+  const tags: Tag[] = src.tags.map(t => ({ ...t, id: tagIdMap.get(t.id)! }))
+  const tasks: Task[] = src.tasks.map(t => ({
+    ...t,
+    id: taskIdMap.get(t.id)!,
+    projectId: t.projectId ? projectIdMap.get(t.projectId) : undefined,
+    parentId: t.parentId ? taskIdMap.get(t.parentId) : undefined,
+    tags: t.tags.map(tg => tagIdMap.get(tg) ?? tg).filter(Boolean),
+    checklist: t.checklist.map(c => ({ ...c, id: newId() })),
+    comments: t.comments.map(c => ({ ...c, id: newId() })),
+    images: (t.images ?? []).map(im => ({ ...im, id: newId() })),
+    attachments: t.attachments.map(a => ({ ...a, id: newId() })),
+    activity: t.activity.map(a => ({ ...a, id: newId() })),
+  }))
+  return { tasks, projects, tags }
+}
+
+/**
+ * Load the authenticated user's dataset from Supabase and hydrate the store.
+ * First-time users (no rows yet) are seeded with the demo content so the app
+ * is never empty on first launch. Once hydrated, the Supabase sync bridge is
+ * armed with the loaded data as its baseline.
+ */
 function useBootstrap() {
   const hydrate = useData(s => s.hydrate)
-  const q = useQuery({ queryKey: ['bootstrap'], queryFn: async () => boot })
-  useEffect(() => { if (q.data) hydrate(q.data) }, [q.data, hydrate])
+  const session = useSession()
+  const userId = session?.user.id
+
+  const q = useQuery({
+    queryKey: ['bootstrap', userId],
+    enabled: !!userId,
+    queryFn: async (): Promise<Bootstrap> => {
+      const loaded = await loadBootstrap()
+      const isEmpty =
+        loaded.tasks.length === 0 && loaded.projects.length === 0 && loaded.tags.length === 0
+      if (!isEmpty) return loaded
+      // Brand-new account: seed demo content and persist it immediately.
+      const seeded = seedForNewUser(boot)
+      beginSync(userId!, { tasks: [], projects: [], tags: [] })
+      diffAndPersist({ tasks: [], projects: [], tags: [] }, seeded, userId!)
+      await flushSync()
+      // Re-arm the baseline to the seeded data so we don't re-write it.
+      beginSync(userId!, seeded)
+      return seeded
+    },
+  })
+
+  useEffect(() => {
+    if (!q.data || !userId) return
+    // Arm the sync bridge with the loaded data as baseline BEFORE hydrating,
+    // so hydrate()'s state change is recognized as already-persisted.
+    beginSync(userId, q.data)
+    hydrate(q.data)
+  }, [q.data, hydrate, userId])
+
   return q
+}
+
+/**
+ * Load the user's persisted preferences from `user_settings` and apply them to
+ * the local UI store, then arm settings persistence for this user. Any local
+ * localStorage prefs are overridden by the server copy (server is the source
+ * of truth once signed in) so settings follow the user across devices.
+ */
+function useSettingsBootstrap() {
+  const session = useSession()
+  const userId = session?.user.id
+  useEffect(() => {
+    if (!userId) return
+    let active = true
+    setSettingsUserId(userId)
+    loadSettings()
+      .then(s => { if (active && s) applyLoadedSettings(s) })
+      .catch(e => console.error('[settings] load failed', e))
+    return () => { active = false }
+  }, [userId])
 }
 const applyTheme = (theme: 'light' | 'dark' | 'system') => {
   const root = document.documentElement
@@ -2191,7 +2384,7 @@ function Sidebar() {
       <div className='border-t p-2'>
         <button
           className='nav-item w-full'
-          onClick={() => { ui.set({ mobileNav: false }); void signOut() }}
+          onClick={() => { ui.set({ mobileNav: false }); void handleSignOut() }}
           title='Sign out'
         >
           <LogOut className='h-4 w-4 text-zinc-500' />
@@ -5434,7 +5627,7 @@ function TaskDetails() {
         <div>
           <div className='mb-2 text-[11px] uppercase tracking-wider text-zinc-500 flex items-center justify-between'>
             <span>Checklist</span>
-            <button className='text-indigo-600 text-xs' onClick={() => data.updateTask(task.id, { checklist: [...task.checklist, { id: 'cl' + Date.now(), text: 'New item', done: false }] })}>+ Add</button>
+            <button className='text-indigo-600 text-xs' onClick={() => data.updateTask(task.id, { checklist: [...task.checklist, { id: newId(), text: 'New item', done: false }] })}>+ Add</button>
           </div>
           <div className='space-y-1'>
             {task.checklist.map(c => (
@@ -5478,7 +5671,7 @@ function TaskDetails() {
                 onChange={async (e) => {
                   const files = Array.from(e.target.files || [])
                   if (!files.length) return
-                  const uploaded = await Promise.all(files.map(async (file) => ({ id: 'img' + Date.now() + Math.random().toString(36).slice(2, 6), url: await readFileAsDataUrl(file), name: file.name })))
+                  const uploaded = await Promise.all(files.map(async (file) => ({ id: newId(), url: await readFileAsDataUrl(file), name: file.name })))
                   data.updateTask(task.id, { images: [...(task.images || []), ...uploaded] })
                   e.currentTarget.value = ''
                 }}
@@ -5504,7 +5697,7 @@ function TaskDetails() {
                 if (e.key !== 'Enter') return
                 const value = (e.currentTarget.value || '').trim()
                 if (!value) return
-                data.updateTask(task.id, { images: [...(task.images || []), { id: 'img' + Date.now(), url: value, name: value.split('/').pop() }] })
+                data.updateTask(task.id, { images: [...(task.images || []), { id: newId(), url: value, name: value.split('/').pop() }] })
                 e.currentTarget.value = ''
               }} />
             </div>
@@ -5882,8 +6075,29 @@ export default function App() {
  * the existing Layout unchanged.
  */
 function AppShell() {
-  useBootstrap()
+  const boot = useBootstrap()
+  useSettingsBootstrap()
+
+  // Surface background-sync failures through the existing toast so the user
+  // knows if a change didn't reach the server (rare — network/RLS issues).
+  useEffect(() => {
+    setSyncErrorHandler((e) => {
+      console.error('[sync] persist error', e)
+      useToast.getState().show('Could not save changes — check your connection', 'info')
+    })
+  }, [])
+
   const booted = useData(s => s.booted)
+  // A failed initial load (e.g. schema not yet applied) shouldn't hang on the
+  // loading screen forever — show an actionable message.
+  if (boot.isError) {
+    return (
+      <div className='h-full flex flex-col items-center justify-center gap-2 p-6 text-center text-sm text-zinc-500'>
+        <div className='font-medium text-[hsl(var(--foreground))]'>Couldn’t load your data</div>
+        <div>Please refresh. If this persists, the database schema may not be applied yet.</div>
+      </div>
+    )
+  }
   if (!booted) return <div className='h-full flex items-center justify-center text-sm text-zinc-500'>Loading…</div>
   return <Layout />
 }

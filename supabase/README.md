@@ -195,3 +195,60 @@ confirmed by rejecting a forged cross-user insert.
   client's `reorder` / `reorderProjects` semantics.
 - **Undo/redo history and transient UI flags are not persisted** by the app, so
   they are intentionally excluded from the database.
+
+---
+
+## 6. Application wiring (completed)
+
+The React app now uses Supabase as its datastore (localStorage is no longer the
+source of truth for tasks/projects/tags/settings). The integration lives in
+`src/data/`:
+
+| File | Role |
+|------|------|
+| `src/data/types.ts` | Domain types shared by the data layer |
+| `src/data/id.ts` | UUID id generation (`newId()`) — replaces `Date.now()` ids |
+| `src/data/mappers.ts` | Row ↔ nested-`Task`/`Project`/`Tag` translation |
+| `src/data/load.ts` | `loadBootstrap()` / `loadSettings()` — initial per-user fetch |
+| `src/data/sync.ts` | Diff-based background sync engine (`diffAndPersist`) |
+| `src/data/settings.ts` | Debounced `user_settings` persistence |
+
+**Architecture preserved.** The `useData` Zustand store keeps its exact
+synchronous, optimistic API and all logic (status propagation, undo/redo,
+reordering). A store **subscriber** computes the minimal diff between the
+previous and next `{tasks, projects, tags}` snapshots and pushes just those
+inserts/updates/deletes to Supabase — so the UI, UX and performance are
+unchanged, and undo/redo restores persist too. First-time users are seeded
+with the demo dataset (re-keyed with fresh UUIDs). `useUI` preferences sync to
+`user_settings` and follow the user across devices.
+
+### Applying the schema (one-time, requires project owner)
+
+The client uses the anon/publishable key, which cannot run DDL. Apply the
+migration once with elevated access:
+
+```bash
+# Option A — Supabase CLI
+supabase link --project-ref whjdybmttuyuhxshulva
+supabase db push
+
+# Option B — Supabase Studio → SQL Editor
+# Paste the contents of supabase/migrations/0001_initial_schema.sql and Run.
+```
+
+After it runs, the app is fully functional: sign up creates a profile +
+default settings automatically, and all data reads/writes go to Supabase.
+
+### Testing
+
+`test/run-integration.mjs` bundles the real data layer and runs it against a
+local PostgreSQL with this exact migration + RLS applied. It asserts full
+field round-trips, minimal-diff updates, child mutations, cascade deletes,
+project detach (SET NULL), cross-user RLS isolation, forged-insert rejection,
+and settings persistence — **25 assertions, all passing**.
+
+```bash
+# Requires a local Postgres 17 with the migration + shim + `authenticated`
+# role applied on 127.0.0.1:5433 (see test/ for the harness).
+node test/run-integration.mjs
+```
