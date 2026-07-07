@@ -27,13 +27,27 @@ import {
   projectToRow, tagToRow, taskToBaseRow,
   checklistToRows, commentsToRows, imagesToRows, attachmentsToRows, activityToRows,
 } from './mappers'
+import { markWrittenMany } from './echo'
 
 export type Snapshot = { tasks: Task[]; projects: Project[]; tags: Tag[] }
 
 // A write op returns anything awaitable that resolves to a Supabase result
 // (`{ error }`). We accept the loose builder type since Supabase query
 // builders are thenables rather than real Promises.
-type WriteOp = () => PromiseLike<{ error: unknown } | null | void>
+type RunFn = () => PromiseLike<{ error: unknown } | null | void>
+// Each queued op also declares which rows it touches (table + primary keys)
+// so the echo-suppression registry can be primed the instant the op is
+// scheduled — before the write round-trips — guaranteeing the inbound
+// Realtime event that mirrors this write is recognised as our own and
+// dropped (prevents update loops / clobbering newer local edits).
+type WriteOp = { table: string; keys: string[]; run: RunFn }
+
+/* Build a WriteOp: `keys` are the primary keys this op writes/deletes, used to
+   prime echo suppression so the inbound Realtime mirror of this write is
+   recognised as our own and dropped. */
+function op(table: string, keys: string[], run: RunFn): WriteOp {
+  return { table, keys, run }
+}
 
 let queue: Promise<void> = Promise.resolve()
 let onErrorCb: ((e: unknown) => void) | null = null
@@ -45,10 +59,18 @@ export function setSyncErrorHandler(cb: (e: unknown) => void) {
 /** Enqueue a batch of write ops to run sequentially after the current queue. */
 function enqueue(ops: WriteOp[]) {
   if (ops.length === 0) return
+  // Prime echo suppression up front (synchronously) so that even if the
+  // Realtime event races ahead of the awaited write result, the key is
+  // already registered as "ours".
+  for (const o of ops) if (o.keys.length) markWrittenMany(o.table, o.keys)
   queue = queue.then(async () => {
-    for (const op of ops) {
+    for (const o of ops) {
       try {
-        const res = await op()
+        // Re-mark right before running: refreshes the TTL window so slow
+        // queue drain (many ops ahead) doesn't let the entry expire before
+        // the write actually lands and echoes back.
+        if (o.keys.length) markWrittenMany(o.table, o.keys)
+        const res = await o.run()
         if (res && typeof res === 'object' && 'error' in res && res.error) onErrorCb?.(res.error)
       } catch (e) {
         onErrorCb?.(e)
@@ -86,8 +108,10 @@ function reconcileChildren<R extends ChildRow>(
   })
   const toDelete = prevRows.filter(r => !nextMap.has(r.id)).map(r => r.id)
 
-  if (toUpsert.length) ops.push(() => supabase.from(table).upsert(toUpsert as any))
-  if (toDelete.length) ops.push(() => supabase.from(table).delete().in('id', toDelete))
+  if (toUpsert.length)
+    ops.push(op(table, toUpsert.map(r => r.id), () => supabase.from(table).upsert(toUpsert as any)))
+  if (toDelete.length)
+    ops.push(op(table, toDelete, () => supabase.from(table).delete().in('id', toDelete)))
 }
 
 /* Reconcile the task_tags join for a single task. */
@@ -100,13 +124,15 @@ function reconcileTaskTags(
   const toAdd = nextTagIds.filter(t => !prevSet.has(t))
   const toRemove = prevTagIds.filter(t => !nextSet.has(t))
   if (toAdd.length) {
-    ops.push(() => supabase.from('task_tags').upsert(
-      toAdd.map(tag_id => ({ task_id: taskId, tag_id, user_id: userId })),
-      { onConflict: 'task_id,tag_id' },
-    ))
+    ops.push(op('task_tags', toAdd.map(tag_id => `${taskId}.${tag_id}`), () =>
+      supabase.from('task_tags').upsert(
+        toAdd.map(tag_id => ({ task_id: taskId, tag_id, user_id: userId })),
+        { onConflict: 'task_id,tag_id' },
+      )))
   }
   if (toRemove.length) {
-    ops.push(() => supabase.from('task_tags').delete().eq('task_id', taskId).in('tag_id', toRemove))
+    ops.push(op('task_tags', toRemove.map(tag_id => `${taskId}.${tag_id}`), () =>
+      supabase.from('task_tags').delete().eq('task_id', taskId).in('tag_id', toRemove)))
   }
 }
 
@@ -125,8 +151,8 @@ export function diffAndPersist(prev: Snapshot, next: Snapshot, userId: string) {
       .filter(t => { const p = prevMap.get(t.id); return !p || changed(p, t) })
       .map(t => tagToRow(t, userId))
     const deletes = prev.tags.filter(t => !nextMap.has(t.id)).map(t => t.id)
-    if (upserts.length) ops.push(() => supabase.from('tags').upsert(upserts))
-    if (deletes.length) ops.push(() => supabase.from('tags').delete().in('id', deletes))
+    if (upserts.length) ops.push(op('tags', upserts.map(r => r.id), () => supabase.from('tags').upsert(upserts)))
+    if (deletes.length) ops.push(op('tags', deletes, () => supabase.from('tags').delete().in('id', deletes)))
   }
 
   /* ---------------- Projects ---------------- */
@@ -137,8 +163,8 @@ export function diffAndPersist(prev: Snapshot, next: Snapshot, userId: string) {
       .filter(p => { const prevP = prevMap.get(p.id); return !prevP || changed(prevP, p) })
       .map(p => projectToRow(p, userId))
     const deletes = prev.projects.filter(p => !nextMap.has(p.id)).map(p => p.id)
-    if (upserts.length) ops.push(() => supabase.from('projects').upsert(upserts))
-    if (deletes.length) ops.push(() => supabase.from('projects').delete().in('id', deletes))
+    if (upserts.length) ops.push(op('projects', upserts.map(r => r.id), () => supabase.from('projects').upsert(upserts)))
+    if (deletes.length) ops.push(op('projects', deletes, () => supabase.from('projects').delete().in('id', deletes)))
   }
 
   /* ---------------- Tasks (base + children) ---------------- */
@@ -154,7 +180,7 @@ export function diffAndPersist(prev: Snapshot, next: Snapshot, userId: string) {
         return changed(baseTaskShape(p), baseTaskShape(t))
       })
       .map(t => taskToBaseRow(t, userId))
-    if (baseUpserts.length) ops.push(() => supabase.from('tasks').upsert(baseUpserts))
+    if (baseUpserts.length) ops.push(op('tasks', baseUpserts.map(r => r.id), () => supabase.from('tasks').upsert(baseUpserts)))
 
     // Per-task child reconciliation for new or changed tasks.
     for (const t of next.tasks) {
@@ -173,22 +199,22 @@ export function diffAndPersist(prev: Snapshot, next: Snapshot, userId: string) {
           // Activity is append-only (no update/delete policy): insert new rows only.
           const prevIds = new Set(p.activity.map(a => a.id))
           const newActivity = activityToRows(t, userId).filter(a => !prevIds.has(a.id))
-          if (newActivity.length) ops.push(() => supabase.from('task_activity').insert(newActivity))
+          if (newActivity.length) ops.push(op('task_activity', newActivity.map(r => r.id), () => supabase.from('task_activity').insert(newActivity)))
         }
       } else {
         // Brand-new task: insert all its children.
         if (t.tags.length) reconcileTaskTags(t.id, userId, [], t.tags, ops)
-        const cl = checklistToRows(t, userId); if (cl.length) ops.push(() => supabase.from('task_checklist_items').upsert(cl))
-        const cm = commentsToRows(t, userId); if (cm.length) ops.push(() => supabase.from('task_comments').upsert(cm))
-        const im = imagesToRows(t, userId); if (im.length) ops.push(() => supabase.from('task_images').upsert(im))
-        const at = attachmentsToRows(t, userId); if (at.length) ops.push(() => supabase.from('task_attachments').upsert(at))
-        const ac = activityToRows(t, userId); if (ac.length) ops.push(() => supabase.from('task_activity').insert(ac))
+        const cl = checklistToRows(t, userId); if (cl.length) ops.push(op('task_checklist_items', cl.map(r => r.id), () => supabase.from('task_checklist_items').upsert(cl)))
+        const cm = commentsToRows(t, userId); if (cm.length) ops.push(op('task_comments', cm.map(r => r.id), () => supabase.from('task_comments').upsert(cm)))
+        const im = imagesToRows(t, userId); if (im.length) ops.push(op('task_images', im.map(r => r.id), () => supabase.from('task_images').upsert(im)))
+        const at = attachmentsToRows(t, userId); if (at.length) ops.push(op('task_attachments', at.map(r => r.id), () => supabase.from('task_attachments').upsert(at)))
+        const ac = activityToRows(t, userId); if (ac.length) ops.push(op('task_activity', ac.map(r => r.id), () => supabase.from('task_activity').insert(ac)))
       }
     }
 
     // Deleted tasks: deleting the base row cascades to all child tables.
     const deletes = prev.tasks.filter(t => !nextMap.has(t.id)).map(t => t.id)
-    if (deletes.length) ops.push(() => supabase.from('tasks').delete().in('id', deletes))
+    if (deletes.length) ops.push(op('tasks', deletes, () => supabase.from('tasks').delete().in('id', deletes)))
   }
 
   enqueue(ops)
