@@ -9,6 +9,7 @@
 import { supabase } from '../supabaseClient'
 import type { UserSettings } from './types'
 import { settingsToRow } from './mappers'
+import { markWritten } from './echo'
 
 let timer: ReturnType<typeof setTimeout> | null = null
 let pending: Partial<UserSettings> = {}
@@ -33,6 +34,9 @@ async function flush() {
   pending = {}
   if (Object.keys(patch).length === 0) return
   const row = settingsToRow(patch, currentUserId)
+  // Suppress the inbound Realtime echo of our own settings write (the
+  // user_settings PK is user_id) so it isn't re-applied to the local store.
+  markWritten('user_settings', currentUserId)
   const { error } = await supabase
     .from('user_settings')
     .upsert(row, { onConflict: 'user_id' })

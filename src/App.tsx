@@ -13,6 +13,8 @@ import { newId } from './data/id'
 import { loadBootstrap, loadSettings } from './data/load'
 import { diffAndPersist, setSyncErrorHandler, flushSync, type Snapshot } from './data/sync'
 import { persistSettings, setSettingsUserId } from './data/settings'
+import { startRealtime, stopRealtime, setRealtimeBridge, type RealtimeBridge } from './data/realtime'
+import { resetEcho } from './data/echo'
 import type { UserSettings } from './data/types'
 import { useForm, Controller } from 'react-hook-form'
 import { z } from 'zod'
@@ -755,11 +757,25 @@ function endSync() {
  *  and that the next user boots from a clean slate. */
 async function handleSignOut() {
   try { await flushSync() } catch { /* best-effort flush */ }
+  endRealtime()
   endSync()
   setSettingsUserId(null)
   useData.getState().reset()
   useHistory.getState().clear()
   await signOut()
+}
+
+/* When >0, the store transition we're observing was produced by applying an
+   INBOUND realtime change, not a local edit. Such transitions must NOT be
+   persisted back to Supabase (that would echo the change straight back and
+   risk an update loop / conflict). We still advance the baseline snapshot so
+   subsequent LOCAL diffs compare against the newly-applied remote state. */
+let applyingRemote = 0
+/** Run `fn` (which mutates the store) as a remote apply: its resulting store
+ *  transition is absorbed into the sync baseline instead of being written. */
+function withRemoteApply(fn: () => void) {
+  applyingRemote++
+  try { fn() } finally { applyingRemote-- }
 }
 
 useData.subscribe((state) => {
@@ -774,8 +790,131 @@ useData.subscribe((state) => {
   ) return
   const prev = lastSyncSnapshot
   lastSyncSnapshot = next
+  // Remote applies advance the baseline (above) but are never written back.
+  if (applyingRemote > 0) return
   diffAndPersist(prev, next, syncUserId)
 })
+
+/* ============================================================
+   Realtime bridge (inbound)
+   ------------------------------------------------------------
+   The inbound engine (src/data/realtime.ts) streams changes from OTHER
+   sessions of the same user into this store. It never imports the store
+   directly (that would be a cycle); instead we register a small set of
+   apply callbacks here. Every callback runs inside `withRemoteApply` so the
+   resulting store transition updates the outbound baseline WITHOUT being
+   written back to Supabase — remote changes flow one way only, so there are
+   no loops, duplicate writes or conflicts. Applies bypass the undo recorder
+   (they call setState directly, not the wrapped actions), so a remote user's
+   change never lands in this session's undo stack.
+
+   Each helper touches ONLY the rows it was handed, preserving the surrounding
+   array order and all untouched local (possibly newer, un-flushed) edits. */
+
+/* Upsert `incoming` into `list` by id, keeping existing positions and
+   appending genuinely-new rows. Returns the SAME reference when nothing
+   changed so React/subscribers can skip needless work. */
+function upsertById<T extends { id: string }>(list: T[], incoming: T[]): T[] {
+  if (incoming.length === 0) return list
+  const map = new Map(incoming.map(x => [x.id, x]))
+  let mutated = false
+  const next = list.map(item => {
+    const repl = map.get(item.id)
+    if (!repl) return item
+    map.delete(item.id)
+    if (JSON.stringify(repl) === JSON.stringify(item)) return item // identical → keep ref
+    mutated = true
+    return repl
+  })
+  // Anything still in the map is brand-new → append.
+  if (map.size) { mutated = true; for (const v of map.values()) next.push(v) }
+  return mutated ? next : list
+}
+
+const realtimeBridge: RealtimeBridge = {
+  applyTasks: (tasks) => withRemoteApply(() => {
+    useData.setState(s => {
+      const next = upsertById(s.tasks, tasks)
+      return next === s.tasks ? {} : { tasks: next }
+    })
+  }),
+  removeTasks: (ids) => withRemoteApply(() => {
+    const idSet = new Set(ids)
+    useData.setState(s => {
+      // Mirror the DB cascade: drop the tasks AND any direct children whose
+      // parent was removed (the server sends separate events too, but this
+      // keeps the local tree consistent immediately).
+      const next = s.tasks.filter(t => !idSet.has(t.id) && !(t.parentId && idSet.has(t.parentId)))
+      return next.length === s.tasks.length ? {} : { tasks: next }
+    })
+  }),
+  applyProject: (p) => withRemoteApply(() => {
+    useData.setState(s => {
+      const next = upsertById(s.projects, [p])
+      return next === s.projects ? {} : { projects: next }
+    })
+  }),
+  removeProject: (id) => withRemoteApply(() => {
+    useData.setState(s => {
+      if (!s.projects.some(p => p.id === id)) return {}
+      // Match the local deleteProject: detach tasks from the removed project.
+      const projects = s.projects.filter(p => p.id !== id)
+      const tasks = s.tasks.map(t => t.projectId === id ? { ...t, projectId: undefined } : t)
+      return { projects, tasks }
+    })
+  }),
+  applyTag: (t) => withRemoteApply(() => {
+    useData.setState(s => {
+      const next = upsertById(s.tags, [t])
+      return next === s.tags ? {} : { tags: next }
+    })
+  }),
+  removeTag: (id) => withRemoteApply(() => {
+    useData.setState(s => {
+      if (!s.tags.some(t => t.id === id)) return {}
+      const tags = s.tags.filter(t => t.id !== id)
+      const tasks = s.tasks.map(t => t.tags.includes(id) ? { ...t, tags: t.tags.filter(x => x !== id) } : t)
+      return { tags, tasks }
+    })
+  }),
+  applySettings: (settings) => {
+    // Reuse the existing loader path so the write-back suppression + theme
+    // application stay identical to first-load behaviour.
+    applyLoadedSettings(settings)
+  },
+  reconcileAll: (b) => withRemoteApply(() => {
+    useData.setState(s => {
+      const tasks = upsertById(s.tasks, b.tasks)
+      const projects = upsertById(s.projects, b.projects)
+      const tags = upsertById(s.tags, b.tags)
+      // Also drop any local rows the server no longer has (missed deletes
+      // while offline). Only recompute when a set actually shrank.
+      const taskIds = new Set(b.tasks.map(t => t.id))
+      const projIds = new Set(b.projects.map(p => p.id))
+      const tagIds = new Set(b.tags.map(t => t.id))
+      const prunedTasks = tasks.filter(t => taskIds.has(t.id))
+      const prunedProjects = projects.filter(p => projIds.has(p.id))
+      const prunedTags = tags.filter(t => tagIds.has(t.id))
+      const patch: Partial<{ tasks: Task[]; projects: Project[]; tags: Tag[] }> = {}
+      if (prunedTasks.length !== s.tasks.length || tasks !== s.tasks) patch.tasks = prunedTasks
+      if (prunedProjects.length !== s.projects.length || projects !== s.projects) patch.projects = prunedProjects
+      if (prunedTags.length !== s.tags.length || tags !== s.tags) patch.tags = prunedTags
+      return patch
+    })
+  }),
+}
+
+/** Arm the inbound realtime stream for a user (called once data is loaded). */
+function beginRealtime(userId: string) {
+  setRealtimeBridge(realtimeBridge)
+  startRealtime(userId)
+}
+/** Disarm the inbound realtime stream (sign-out). */
+function endRealtime() {
+  stopRealtime()
+  setRealtimeBridge(null)
+  resetEcho()
+}
 
 /* ============================================================
    Helpers
@@ -822,6 +961,13 @@ function useBootstrap() {
     // so hydrate()'s state change is recognized as already-persisted.
     beginSync(userId, q.data)
     hydrate(q.data)
+    // Arm the inbound realtime stream AFTER the store holds the freshly-loaded
+    // data: the first SUBSCRIBED then needs no resync, and any change from
+    // another session lands live from here on.
+    beginRealtime(userId)
+    // Tear the subscription down if the user changes / component unmounts so
+    // we never leak a channel or apply another account's rows.
+    return () => { endRealtime() }
   }, [q.data, hydrate, userId])
 
   return q
