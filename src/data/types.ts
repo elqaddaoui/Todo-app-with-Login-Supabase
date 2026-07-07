@@ -52,4 +52,8 @@ export type UserSettings = {
   calendarSidePanel: boolean
   undoToastEnabled: boolean
   undoToastDuration: number
+  /** When true, new tasks reuse the last selected creation options. */
+  rememberLastTaskOptions: boolean
+  /** When true, project cards show the project description. */
+  showProjectDescriptions: boolean
 }
