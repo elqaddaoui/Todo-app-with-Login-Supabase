@@ -56,6 +56,7 @@ export type SettingsRow = {
   sidebar_width: number; details_width: number; compact_mode: boolean;
   dnd_enabled: boolean; calendar_side_panel: boolean;
   undo_toast_enabled: boolean; undo_toast_duration: number
+  remember_last_task_options: boolean; show_project_descriptions: boolean
 }
 
 /* Normalize a DB `time` value ("14:00:00") to the app's "HH:mm". */
@@ -136,6 +137,8 @@ export function rowToSettings(r: SettingsRow): UserSettings {
     calendarSidePanel: r.calendar_side_panel,
     undoToastEnabled: r.undo_toast_enabled,
     undoToastDuration: r.undo_toast_duration,
+    rememberLastTaskOptions: r.remember_last_task_options ?? false,
+    showProjectDescriptions: r.show_project_descriptions ?? false,
   }
 }
 
@@ -227,5 +230,7 @@ export function settingsToRow(s: Partial<UserSettings>, userId: string): Partial
   if (s.calendarSidePanel !== undefined) row.calendar_side_panel = s.calendarSidePanel
   if (s.undoToastEnabled !== undefined) row.undo_toast_enabled = s.undoToastEnabled
   if (s.undoToastDuration !== undefined) row.undo_toast_duration = s.undoToastDuration
+  if (s.rememberLastTaskOptions !== undefined) row.remember_last_task_options = s.rememberLastTaskOptions
+  if (s.showProjectDescriptions !== undefined) row.show_project_descriptions = s.showProjectDescriptions
   return row
 }

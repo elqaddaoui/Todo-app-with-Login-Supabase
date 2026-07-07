@@ -21,7 +21,7 @@ import { z } from 'zod'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { motion, AnimatePresence } from 'framer-motion'
 import { DndContext, DragOverlay, PointerSensor, TouchSensor, closestCenter, useSensor, useSensors, useDraggable, useDroppable, type DragEndEvent, type DragMoveEvent, type DragStartEvent } from '@dnd-kit/core'
-import { SortableContext, arrayMove, useSortable, verticalListSortingStrategy, type SortingStrategy } from '@dnd-kit/sortable'
+import { SortableContext, arrayMove, useSortable, verticalListSortingStrategy, rectSortingStrategy, type SortingStrategy } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import { Calendar as BigCalendar, dateFnsLocalizer, Views, type View, type Event } from 'react-big-calendar'
 import withDragAndDrop from 'react-big-calendar/lib/addons/dragAndDrop'
@@ -216,6 +216,10 @@ const useUI = create<{
   // Undo/Redo toast preferences
   undoToastEnabled: boolean;
   undoToastDuration: number; // milliseconds the toast stays visible
+  // When true, new tasks reuse the last selected creation options.
+  rememberLastTaskOptions: boolean;
+  // When true, project cards show the project description.
+  showProjectDescriptions: boolean;
   set: (p: Partial<any>) => void
 }>()(persist(
   (set) => ({
@@ -229,10 +233,33 @@ const useUI = create<{
     quickSettings: false,
     undoToastEnabled: true,
     undoToastDuration: 2000,
+    rememberLastTaskOptions: false,
+    showProjectDescriptions: false,
     set: (p) => set(p),
   }),
   { name: 'orbit-ui' }
 ))
+
+/* Remembered task-creation options (persisted locally). Only used when the
+   `rememberLastTaskOptions` setting is ON. Stored separately from `useUI`
+   because it is device-local convenience state, not a synced preference. */
+type RememberedTaskOptions = {
+  priority?: Priority
+  category?: Category
+  projectId?: string
+  tags?: string[]
+  estimatedMinutes?: number
+}
+const REMEMBER_KEY = 'orbit-last-task-options'
+function loadRememberedTaskOptions(): RememberedTaskOptions {
+  try {
+    const raw = localStorage.getItem(REMEMBER_KEY)
+    return raw ? JSON.parse(raw) as RememberedTaskOptions : {}
+  } catch { return {} }
+}
+function saveRememberedTaskOptions(opts: RememberedTaskOptions) {
+  try { localStorage.setItem(REMEMBER_KEY, JSON.stringify(opts)) } catch {}
+}
 
 /* The subset of `useUI` that is backed by the `user_settings` table. Ephemeral
    UI flags (open panels, current selection, etc.) stay local-only. */
@@ -241,6 +268,8 @@ const pickSettings = (s: ReturnType<typeof useUI.getState>): UserSettings => ({
   compactMode: s.compactMode, dndEnabled: s.dndEnabled,
   calendarSidePanel: s.calendarSidePanel,
   undoToastEnabled: s.undoToastEnabled, undoToastDuration: s.undoToastDuration,
+  rememberLastTaskOptions: s.rememberLastTaskOptions,
+  showProjectDescriptions: s.showProjectDescriptions,
 })
 
 /* Persist settings to Supabase whenever a backed field changes. The
@@ -295,6 +324,17 @@ const useData = create<{
   moveTaskToProject: (id: string, projectId: string | undefined) => void;
   setParent: (id: string, parentId: string | undefined) => void;
   reorder: (ids: string[]) => void;
+  // ---- Bulk operations (multi-select). All mutate the store in one pass so
+  // the outbound sync engine batches them into a single Supabase round-trip. ----
+  bulkUpdate: (ids: string[], p: Partial<Task>) => void;
+  bulkDelete: (ids: string[]) => void;
+  bulkMoveToProject: (ids: string[], projectId: string | undefined) => void;
+  bulkSetStatus: (ids: string[], status: Status) => void;
+  bulkSetPriority: (ids: string[], priority: Priority) => void;
+  bulkSetFavorite: (ids: string[], favorite: boolean) => void;
+  bulkArchive: (ids: string[], archived: boolean) => void;
+  bulkAddTag: (ids: string[], tagId: string) => void;
+  bulkRemoveTag: (ids: string[], tagId: string) => void;
   addProject: (name: string) => void;
   updateProject: (id: string, p: Partial<Project>) => void;
   duplicateProject: (id: string) => void;
@@ -308,7 +348,12 @@ const useData = create<{
 }>()(persist(
   (set, get) => ({
     booted: false, tasks: [], projects: [], tags: [], filters: baseFilter,
-    hydrate: (b) => set(s => s.booted ? s : { booted: true, tasks: b.tasks, projects: b.projects, tags: b.tags }),
+    // Supabase is the source of truth. Always apply the freshly-loaded snapshot
+    // — even if we were already `booted` — so a re-login, session restore, or
+    // refetch replaces any stale in-memory data instead of being silently
+    // discarded. (This was the "data disappears after login until Clear local
+    // cache" bug: the old guard `s.booted ? s` dropped the fresh dataset.)
+    hydrate: (b) => set({ booted: true, tasks: b.tasks, projects: b.projects, tags: b.tags }),
     // Clear all in-memory data (used on sign-out so the next account starts
     // clean and the sync bridge never mixes two users' data).
     reset: () => set({ booted: false, tasks: [], projects: [], tags: [] }),
@@ -321,9 +366,14 @@ const useData = create<{
         projectId: p.projectId, parentId: p.parentId, tags: p.tags ?? [],
         dueDate: p.dueDate, startDate: p.startDate, time: p.time,
         estimatedMinutes: p.estimatedMinutes ?? 60, favorite: p.favorite ?? false,
+        archived: p.archived ?? false,
         description: p.description, checklist: p.checklist ?? [], comments: p.comments ?? [], images: p.images ?? [], attachments: p.attachments ?? [],
         activity: [{ id: newId(), type: 'created', message: 'Task created', createdAt: nowIso(), by: 'You' }],
-        createdAt: nowIso(), updatedAt: nowIso(), completedAt: undefined, order: s.tasks.length,
+        // If created directly as Done (e.g. from the Completed view), stamp
+        // completedAt so it sits correctly in completed/analytics views.
+        createdAt: nowIso(), updatedAt: nowIso(),
+        completedAt: (p.status === 'done') ? nowIso() : undefined,
+        order: s.tasks.length,
       }
       let tasks = [newTask, ...s.tasks]
       // Status propagation: if this new subtask is NOT done, no completed
@@ -395,6 +445,59 @@ const useData = create<{
       pos.forEach((p, i) => { if (subset[i]) next[p] = subset[i] })
       return { tasks: next.map((t, i) => ({ ...t, order: i })) }
     }),
+    /* ---- Bulk operations ----
+       Each applies a single functional setState so all touched rows change in
+       ONE store transition. The Supabase sync subscriber then diffs prev→next
+       once and pushes a single batched write, keeping bulk edits real-time. */
+    bulkUpdate: (ids, p) => set(s => {
+      const idSet = new Set(ids)
+      const stamp = nowIso()
+      return { tasks: s.tasks.map(t => idSet.has(t.id) ? { ...t, ...p, updatedAt: stamp } : t) }
+    }),
+    bulkDelete: (ids) => set(s => {
+      const idSet = new Set(ids)
+      // Remove selected tasks AND any direct children (mirror deleteTask).
+      return { tasks: s.tasks.filter(t => !idSet.has(t.id) && !(t.parentId && idSet.has(t.parentId))) }
+    }),
+    bulkMoveToProject: (ids, projectId) => set(s => {
+      const idSet = new Set(ids)
+      const stamp = nowIso()
+      return { tasks: s.tasks.map(t => idSet.has(t.id) ? { ...t, projectId, updatedAt: stamp } : t) }
+    }),
+    bulkSetStatus: (ids, status) => set(s => {
+      const idSet = new Set(ids)
+      const stamp = nowIso()
+      return {
+        tasks: s.tasks.map(t => idSet.has(t.id)
+          ? { ...t, status, completedAt: status === 'done' ? (t.completedAt ?? stamp) : undefined, updatedAt: stamp }
+          : t),
+      }
+    }),
+    bulkSetPriority: (ids, priority) => set(s => {
+      const idSet = new Set(ids)
+      const stamp = nowIso()
+      return { tasks: s.tasks.map(t => idSet.has(t.id) ? { ...t, priority, updatedAt: stamp } : t) }
+    }),
+    bulkSetFavorite: (ids, favorite) => set(s => {
+      const idSet = new Set(ids)
+      const stamp = nowIso()
+      return { tasks: s.tasks.map(t => idSet.has(t.id) ? { ...t, favorite, updatedAt: stamp } : t) }
+    }),
+    bulkArchive: (ids, archived) => set(s => {
+      const idSet = new Set(ids)
+      const stamp = nowIso()
+      return { tasks: s.tasks.map(t => idSet.has(t.id) ? { ...t, archived, updatedAt: stamp } : t) }
+    }),
+    bulkAddTag: (ids, tagId) => set(s => {
+      const idSet = new Set(ids)
+      const stamp = nowIso()
+      return { tasks: s.tasks.map(t => idSet.has(t.id) && !t.tags.includes(tagId) ? { ...t, tags: [...t.tags, tagId], updatedAt: stamp } : t) }
+    }),
+    bulkRemoveTag: (ids, tagId) => set(s => {
+      const idSet = new Set(ids)
+      const stamp = nowIso()
+      return { tasks: s.tasks.map(t => idSet.has(t.id) && t.tags.includes(tagId) ? { ...t, tags: t.tags.filter(x => x !== tagId), updatedAt: stamp } : t) }
+    }),
     addProject: (name) => set(s => ({
       projects: [...s.projects, {
         id: newId(), name, icon: 'FolderKanban',
@@ -447,6 +550,53 @@ const useData = create<{
     },
   }
 ))
+
+/* ============================================================
+   Multi-select store
+   ------------------------------------------------------------
+   A lightweight, app-wide selection layer for tasks. When `active` is true the
+   app is in "selection mode": task rows / cards render a checkbox and clicking
+   a task toggles its selection instead of opening details. A floating action
+   bar (BulkActionBar) exposes bulk edit / move / delete / status / priority /
+   favorite / archive / tag actions that all funnel through the `bulk*` store
+   methods above — so every bulk edit is a single store transition that the
+   Supabase sync engine persists in real time.
+
+   Selection is intentionally NOT persisted: it's ephemeral UI state that
+   should clear on navigation / refresh.
+   ============================================================ */
+const useSelection = create<{
+  active: boolean
+  ids: Set<string>
+  /** Anchor for shift-range selection (last clicked id). */
+  anchor: string | null
+  enter: (id?: string) => void
+  exit: () => void
+  toggle: (id: string) => void
+  select: (id: string) => void
+  setMany: (ids: string[]) => void
+  clear: () => void
+  setAnchor: (id: string | null) => void
+}>((set, get) => ({
+  active: false,
+  ids: new Set<string>(),
+  anchor: null,
+  enter: (id) => set(() => ({ active: true, ids: id ? new Set([id]) : new Set<string>(), anchor: id ?? null })),
+  exit: () => set({ active: false, ids: new Set<string>(), anchor: null }),
+  toggle: (id) => set(s => {
+    const next = new Set(s.ids)
+    if (next.has(id)) next.delete(id); else next.add(id)
+    return { ids: next, anchor: id, active: true }
+  }),
+  select: (id) => set(s => { const next = new Set(s.ids); next.add(id); return { ids: next, anchor: id, active: true } }),
+  setMany: (ids) => set({ ids: new Set(ids), active: true }),
+  clear: () => set({ ids: new Set<string>() }),
+  setAnchor: (id) => set({ anchor: id }),
+}))
+
+/** Convenience: is a given task currently selected? (reactive) */
+const useIsSelected = (id: string) => useSelection(s => s.ids.has(id))
+const useSelectionActive = () => useSelection(s => s.active)
 
 /* ============================================================
    Global Command-based Undo / Redo system
@@ -943,32 +1093,67 @@ function useBootstrap() {
   const q = useQuery({
     queryKey: ['bootstrap', userId],
     enabled: !!userId,
-    // Never auto-refetch the bootstrap: it's a one-shot load for the session.
-    staleTime: Infinity,
-    gcTime: Infinity,
-    refetchOnMount: false,
+    // Supabase is authoritative, so we always want the latest snapshot when the
+    // app (re)mounts or a dropped connection comes back. Marking the data as
+    // immediately stale + refetching on mount/reconnect guarantees that a
+    // login, hard refresh, or session restore pulls fresh rows rather than
+    // serving a stale cached payload (the "data disappears after login" bug).
+    // Live edits between refetches still arrive via the realtime stream, so we
+    // don't need window-focus polling.
+    staleTime: 0,
+    gcTime: 5 * 60 * 1000,
+    refetchOnMount: 'always',
     refetchOnWindowFocus: false,
-    refetchOnReconnect: false,
-    retry: false,
+    refetchOnReconnect: true,
+    retry: 2,
     // Always return exactly the user's own rows — nothing more. New accounts
     // return an empty dataset and stay empty until the user adds their own data.
     queryFn: (): Promise<Bootstrap> => loadBootstrap(),
   })
 
+  // Track which user the realtime stream is currently armed for so we only
+  // (re)start it when the account actually changes — not on every background
+  // refetch (which produces a fresh `q.data` reference each time).
+  const realtimeUserRef = useRef<string | null>(null)
+
   useEffect(() => {
     if (!q.data || !userId) return
-    // Arm the sync bridge with the loaded data as baseline BEFORE hydrating,
-    // so hydrate()'s state change is recognized as already-persisted.
-    beginSync(userId, q.data)
-    hydrate(q.data)
-    // Arm the inbound realtime stream AFTER the store holds the freshly-loaded
-    // data: the first SUBSCRIBED then needs no resync, and any change from
-    // another session lands live from here on.
-    beginRealtime(userId)
-    // Tear the subscription down if the user changes / component unmounts so
-    // we never leak a channel or apply another account's rows.
-    return () => { endRealtime() }
+    const data = q.data
+    let cancelled = false
+    // A refetch may have raced ahead of outbound writes still sitting in the
+    // sync queue (e.g. an edit made moments before a reconnect). Flush those
+    // first so the fresh snapshot we're about to apply already contains them
+    // and we never clobber a not-yet-persisted local edit. On the very first
+    // load the queue is empty, so this resolves immediately.
+    void flushSync().then(() => {
+      if (cancelled) return
+      // Arm the sync bridge with the loaded data as baseline BEFORE hydrating,
+      // so hydrate()'s state change is recognized as already-persisted.
+      beginSync(userId, data)
+      // Supabase is authoritative: always replace the in-memory store with the
+      // freshly-loaded snapshot (hydrate no longer early-returns when booted).
+      hydrate(data)
+      // Arm the inbound realtime stream AFTER the store holds the freshly-loaded
+      // data — but only (re)subscribe when the account actually changed, so a
+      // routine refetch doesn't needlessly cycle the channel.
+      if (realtimeUserRef.current !== userId) {
+        realtimeUserRef.current = userId
+        beginRealtime(userId)
+      }
+    })
+    return () => { cancelled = true }
   }, [q.data, hydrate, userId])
+
+  // Tear the realtime subscription down when the account changes or the app
+  // unmounts, so we never leak a channel or apply another account's rows.
+  useEffect(() => {
+    return () => {
+      if (realtimeUserRef.current) {
+        endRealtime()
+        realtimeUserRef.current = null
+      }
+    }
+  }, [userId])
 
   return q
 }
@@ -1082,6 +1267,111 @@ const sortTasks = (items: Task[]) => {
 }
 const overdue = (t: Task) => !!t.dueDate && t.status !== 'done' && t.status !== 'cancelled' && isPast(parseISO(t.dueDate)) && !isToday(parseISO(t.dueDate))
 const subTasks = (tasks: Task[], id: string) => tasks.filter(t => t.parentId === id)
+
+/* ============================================================
+   View-context inference for task creation
+   ------------------------------------------------------------
+   New tasks must INHERIT the context of the view they're created in so they
+   never land "unassigned" and immediately disappear from the list the user
+   is looking at. e.g. creating a task on Today should due-date it today; on a
+   Project it should be filed under that project; on Favorites it should be
+   favorited; on a Tag it should carry that tag.
+
+   `deriveCreationContext(pathname, params)` returns a partial Task describing
+   the defaults for the current route. The ONLY views that intentionally
+   create unassigned tasks are the "all tasks" style views (all-tasks,
+   dashboard, calendar, upcoming) where no single bucket is implied.
+   ============================================================ */
+export type CreationContext = Partial<Pick<Task,
+  'projectId' | 'dueDate' | 'favorite' | 'status' | 'tags' | 'archived'>>
+
+/** True for routes where a new task legitimately starts unassigned. */
+function isUnassignedContextRoute(pathname: string): boolean {
+  return (
+    pathname.startsWith('/all-tasks') ||
+    pathname.startsWith('/dashboard') ||
+    pathname.startsWith('/upcoming') ||
+    pathname.startsWith('/calendar')
+  )
+}
+
+/**
+ * Derive the creation defaults implied by the current view. `activeTagId` is
+ * the tag currently selected on the Tags page (context lives in that page's
+ * local state, so it must be threaded in when known).
+ */
+function deriveCreationContext(
+  pathname: string,
+  params: { projectId?: string; activeTagId?: string } = {},
+): CreationContext {
+  // Project view → file under that project.
+  if (pathname.startsWith('/projects/') && params.projectId) {
+    return { projectId: params.projectId }
+  }
+  // Today → due today so it shows up in the Today bucket immediately.
+  if (pathname.startsWith('/today')) return { dueDate: todayStr }
+  // Favorites → mark favorite so it appears in the Favorites bucket.
+  if (pathname.startsWith('/favorites')) return { favorite: true }
+  // Completed → create it already done (its natural bucket).
+  if (pathname.startsWith('/completed')) {
+    return { status: 'done' as Status }
+  }
+  // Archive → create it archived so it lands in the Archive bucket.
+  if (pathname.startsWith('/archive')) return { archived: true }
+  // Tags → carry the currently-selected tag.
+  if (pathname.startsWith('/tags') && params.activeTagId) {
+    return { tags: [params.activeTagId] }
+  }
+  // Everything else (all-tasks, dashboard, calendar, upcoming, projects list)
+  // creates an unassigned task.
+  return {}
+}
+
+/**
+ * Hook that reads the current route and returns the creation context plus a
+ * helper to merge it into a new task. `activeTagId` is passed by the Tags page.
+ */
+function useCreationContext(activeTagId?: string): {
+  context: CreationContext
+  isUnassigned: boolean
+  buildDefaults: () => Partial<Task>
+} {
+  const location = useLocation()
+  const params = useParams()
+  const pathname = location.pathname
+  const context = deriveCreationContext(pathname, {
+    projectId: (params as { id?: string }).id,
+    activeTagId,
+  })
+  const isUnassigned = isUnassignedContextRoute(pathname)
+  const buildDefaults = () => {
+    // Start from the view context, then layer remembered options (if enabled)
+    // WITHOUT overriding an explicit context value (e.g. the project of a
+    // Project view always wins over a remembered project).
+    const ui = useUI.getState()
+    let defaults: Partial<Task> = { ...context }
+    if (ui.rememberLastTaskOptions) {
+      const remembered = loadRememberedTaskOptions()
+      defaults = {
+        priority: remembered.priority,
+        category: remembered.category,
+        estimatedMinutes: remembered.estimatedMinutes,
+        // remembered project/tags only fill in when the view didn't set them
+        projectId: context.projectId ?? remembered.projectId,
+        tags: context.tags ?? remembered.tags,
+        ...context,
+      }
+    }
+    return defaults
+  }
+  return { context, isUnassigned, buildDefaults }
+}
+
+/** Persist the options a user just used to create a task (when remembering). */
+function rememberTaskOptionsIfEnabled(opts: RememberedTaskOptions) {
+  if (!useUI.getState().rememberLastTaskOptions) return
+  saveRememberedTaskOptions(opts)
+}
 
 const statusBadge = (s: Status) =>
   <span className={cn('badge', statusMeta[s].color, 'bg-black/5 dark:bg-white/5')}>
@@ -1265,7 +1555,7 @@ function buildTaskMenu(
   ctx: {
     projects: Project[]; navigate: (url: string) => void;
     onRename: () => void; onCopyLink: () => void; onOpenNewTab: () => void; onLocateCalendar: () => void;
-    onDelete: () => void; onAddSubtask?: () => void;
+    onDelete: () => void; onAddSubtask?: () => void; onSelect?: () => void;
   }
 ): CtxItem[] {
   const d = useData.getState()
@@ -1281,6 +1571,7 @@ function buildTaskMenu(
     .filter(t => !t.archived && t.id !== task.id && !descendants.has(t.id))
     .slice(0, 30) // keep submenu reasonable
   return [
+    { kind: 'item', label: 'Select', icon: <CheckCircle2 className='h-3.5 w-3.5' />, onClick: ctx.onSelect || (() => {}) },
     { kind: 'item', label: 'Create subtask', icon: <Plus className='h-3.5 w-3.5' />, onClick: ctx.onAddSubtask || (() => {}) },
     { kind: 'item', label: 'Rename', icon: <Pencil className='h-3.5 w-3.5' />, onClick: ctx.onRename },
     { kind: 'item', label: 'Duplicate', icon: <Copy className='h-3.5 w-3.5' />, onClick: () => d.duplicateTask(task.id) },
@@ -1498,6 +1789,43 @@ function TaskRow({ task, showProject = true, depth = 0 }: { task: Task; showProj
   const [renaming, setRenaming] = useState(false)
   const [confirming, setConfirming] = useState(false)
 
+  // ---- Multi-select ----
+  const selectionActive = useSelectionActive()
+  const isChecked = useIsSelected(task.id)
+  // Range-select support (shift-click extends from anchor over the visible list).
+  const rangeSelect = (id: string) => {
+    const sel = useSelection.getState()
+    const orderedIds = collectVisibleIds(
+      sortTasks(allTasks.filter(t => !t.parentId || !allTasks.some(x => x.id === t.parentId))),
+      allTasks,
+    )
+    const anchor = sel.anchor
+    if (!anchor) { sel.toggle(id); return }
+    const ai = orderedIds.indexOf(anchor)
+    const bi = orderedIds.indexOf(id)
+    if (ai < 0 || bi < 0) { sel.toggle(id); return }
+    const [lo, hi] = ai < bi ? [ai, bi] : [bi, ai]
+    const range = orderedIds.slice(lo, hi + 1)
+    const next = new Set(sel.ids)
+    range.forEach(r => next.add(r))
+    useSelection.setState({ ids: next, active: true, anchor: id })
+  }
+  const handleRowClick = (e: React.MouseEvent) => {
+    if (longPressRef.current.fired) { longPressRef.current.fired = false; return }
+    // In selection mode, a click toggles selection instead of opening details.
+    if (selectionActive) {
+      if (e.shiftKey) rangeSelect(task.id)
+      else useSelection.getState().toggle(task.id)
+      return
+    }
+    // Ctrl/Cmd-click enters selection mode from a normal list.
+    if (e.metaKey || e.ctrlKey) {
+      useSelection.getState().enter(task.id)
+      return
+    }
+    setUI({ selected: task.id, details: true })
+  }
+
   // Subtasks (children whose parentId points here). Sorted same way as parent list.
   const hideDoneChildren = React.useContext(HideDoneCtx)
   const children = useMemo(
@@ -1535,6 +1863,7 @@ function TaskRow({ task, showProject = true, depth = 0 }: { task: Task; showProj
       onLocateCalendar: () => { useUI.getState().set({ calendarTarget: task.id }); navigate('/calendar') },
       onDelete: () => setConfirming(true),
       onAddSubtask: () => { setExpanded(true); setAddingChild(true) },
+      onSelect: () => useSelection.getState().enter(task.id),
     }))
   }
 
@@ -1608,8 +1937,8 @@ function TaskRow({ task, showProject = true, depth = 0 }: { task: Task; showProj
         ref={setNodeRef}
         {...rowDragAttributes}
         {...rowDragListeners}
-        className={cn('group panel p-3 task-row', dndEnabled && 'cursor-grab active:cursor-grabbing task-row-draggable', isSelected && 'is-selected', nestHighlight && 'task-row-nest-target', isContextParent && 'task-row-search-context')}
-        onClick={() => { if (longPressRef.current.fired) { longPressRef.current.fired = false; return } setUI({ selected: task.id, details: true }) }}
+        className={cn('group panel p-3 task-row', dndEnabled && !selectionActive && 'cursor-grab active:cursor-grabbing task-row-draggable', isSelected && 'is-selected', isChecked && 'is-multiselected', nestHighlight && 'task-row-nest-target', isContextParent && 'task-row-search-context')}
+        onClick={handleRowClick}
         onContextMenu={isMobileTaskCard ? (e) => { e.preventDefault(); e.stopPropagation() } : openMenu}
         onTouchStart={onTouchStart}
         onTouchEnd={cancelLongPress}
@@ -1620,6 +1949,26 @@ function TaskRow({ task, showProject = true, depth = 0 }: { task: Task; showProj
         {renaming && <NamePrompt title='Rename task' initial={task.title} label='Title' onClose={() => setRenaming(false)} onSave={(v) => updateTask(task.id, { title: v })} />}
         {confirming && <DeleteConfirm title='Delete task' name={task.title} onClose={() => setConfirming(false)} onConfirm={() => deleteTask(task.id)} />}
         <div className='flex gap-3 items-start'>
+          {/* Multi-select checkbox — visible in selection mode or on hover so
+              the user can start selecting without a mode switch. */}
+          <button
+            type='button'
+            onPointerDown={e => e.stopPropagation()}
+            onClick={e => {
+              e.stopPropagation()
+              if (e.shiftKey && selectionActive) rangeSelect(task.id)
+              else useSelection.getState().toggle(task.id)
+            }}
+            className={cn(
+              'task-select-checkbox mt-0.5 shrink-0 h-4 w-4 rounded border items-center justify-center transition',
+              selectionActive ? 'inline-flex' : 'hidden group-hover:inline-flex',
+              isChecked ? 'bg-indigo-500 border-indigo-500 text-white' : 'border-zinc-300 dark:border-zinc-600 text-transparent hover:border-indigo-400',
+            )}
+            aria-label={isChecked ? 'Deselect task' : 'Select task'}
+            aria-pressed={isChecked}
+          >
+            <CheckCircle2 className='h-3 w-3' />
+          </button>
           {/* Expand toggle for parents with subtasks. Reserves space even when no
               children, so titles align across rows. */}
           <button
@@ -3421,6 +3770,49 @@ function SettingsContent({ compact = false }: { compact?: boolean }) {
         )}
       </Card>
 
+      {/* ====== Remember last task options ====== */}
+      <Card className={cn(compact && '!p-4')}>
+        <div className='flex items-start gap-3'>
+          <div className='flex-1'>
+            <div className='text-sm font-semibold flex items-center gap-2'>
+              <RotateCcw className='h-4 w-4 text-zinc-500' />Remember last task options
+            </div>
+            <div className='mt-1 text-xs text-zinc-500'>
+              {ui.rememberLastTaskOptions ? 'Enabled' : 'Disabled'} — when on, creating a
+              new task reuses the last selected options (priority, project, tags,
+              estimate) instead of resetting them each time. View context (e.g. the
+              current project) always takes precedence.
+            </div>
+          </div>
+          <Switch
+            checked={ui.rememberLastTaskOptions}
+            onChange={() => ui.set({ rememberLastTaskOptions: !ui.rememberLastTaskOptions })}
+            label='Toggle remembering last task options'
+          />
+        </div>
+      </Card>
+
+      {/* ====== Show project descriptions on cards ====== */}
+      <Card className={cn(compact && '!p-4')}>
+        <div className='flex items-start gap-3'>
+          <div className='flex-1'>
+            <div className='text-sm font-semibold flex items-center gap-2'>
+              <FolderKanban className='h-4 w-4 text-zinc-500' />Project descriptions
+            </div>
+            <div className='mt-1 text-xs text-zinc-500'>
+              {ui.showProjectDescriptions ? 'Enabled' : 'Disabled'} — show each
+              project's description on its card in the Projects page. Turn off for a
+              cleaner, more compact grid.
+            </div>
+          </div>
+          <Switch
+            checked={ui.showProjectDescriptions}
+            onChange={() => ui.set({ showProjectDescriptions: !ui.showProjectDescriptions })}
+            label='Toggle project descriptions on cards'
+          />
+        </div>
+      </Card>
+
       {/* ====== Calendar side panel toggle (desktop only) ====== */}
       <Card className={cn(compact && '!p-4')}>
         <div className='flex items-start gap-3'>
@@ -3945,6 +4337,203 @@ function AccountPage() {
   )
 }
 
+/* ============================================================
+   Bulk edit modal — apply multiple field changes to all selected tasks in
+   one action. Only fields the user explicitly toggles ON are applied, so an
+   empty submit is a no-op. Runs through `bulkUpdate`, a single store
+   transition that syncs to Supabase in one batched write.
+   ============================================================ */
+function BulkEditModal({ ids, onClose }: { ids: string[]; onClose: () => void }) {
+  const projects = useData(s => s.projects)
+  const bulkUpdate = useData(s => s.bulkUpdate)
+  const [useStatus, setUseStatus] = useState(false)
+  const [status, setStatus] = useState<Status>('in_progress')
+  const [usePriority, setUsePriority] = useState(false)
+  const [priority, setPriority] = useState<Priority>('medium')
+  const [useProject, setUseProject] = useState(false)
+  const [projectId, setProjectId] = useState<string>('')
+  const [useDue, setUseDue] = useState(false)
+  const [dueDate, setDueDate] = useState<string>('')
+
+  const apply = () => {
+    const patch: Partial<Task> = {}
+    if (useStatus) { patch.status = status; patch.completedAt = status === 'done' ? nowIso() : undefined }
+    if (usePriority) patch.priority = priority
+    if (useProject) patch.projectId = projectId || undefined
+    if (useDue) patch.dueDate = dueDate || undefined
+    if (Object.keys(patch).length) bulkUpdate(ids, patch)
+    onClose()
+  }
+
+  const Row = ({ on, setOn, label, children }: { on: boolean; setOn: (v: boolean) => void; label: string; children: React.ReactNode }) => (
+    <div className='flex items-center gap-3'>
+      <button type='button' onClick={() => setOn(!on)} className={cn('shrink-0 h-4 w-4 rounded border inline-flex items-center justify-center', on ? 'bg-indigo-500 border-indigo-500 text-white' : 'border-zinc-300 dark:border-zinc-600 text-transparent')}>
+        <CheckCircle2 className='h-3 w-3' />
+      </button>
+      <span className='text-sm w-20 shrink-0'>{label}</span>
+      <div className={cn('flex-1', !on && 'opacity-40 pointer-events-none')}>{children}</div>
+    </div>
+  )
+
+  return createPortal(
+    <>
+      <div className='popup-overlay' onClick={onClose} />
+      <div className='popup-shell panel p-0' style={{ maxWidth: 480 }}>
+        <div className='p-4 border-b'>
+          <div className='text-sm font-semibold'>Edit {ids.length} task{ids.length === 1 ? '' : 's'}</div>
+          <div className='mt-1 text-xs text-zinc-500'>Toggle a field on to apply it to every selected task.</div>
+        </div>
+        <div className='p-4 space-y-3'>
+          <Row on={useStatus} setOn={setUseStatus} label='Status'>
+            <select className='input' value={status} onChange={e => setStatus(e.target.value as Status)}>
+              {Object.entries(statusMeta).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
+            </select>
+          </Row>
+          <Row on={usePriority} setOn={setUsePriority} label='Priority'>
+            <select className='input' value={priority} onChange={e => setPriority(e.target.value as Priority)}>
+              {Object.entries(priorityMeta).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
+            </select>
+          </Row>
+          <Row on={useProject} setOn={setUseProject} label='Project'>
+            <select className='input' value={projectId} onChange={e => setProjectId(e.target.value)}>
+              <option value=''>No project</option>
+              {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+            </select>
+          </Row>
+          <Row on={useDue} setOn={setUseDue} label='Due date'>
+            <input type='date' className='input' value={dueDate} onChange={e => setDueDate(e.target.value)} />
+          </Row>
+        </div>
+        <div className='flex items-center justify-end gap-2 px-4 py-3 border-t bg-zinc-50 dark:bg-zinc-900'>
+          <button className='btn btn-secondary' onClick={onClose}>Cancel</button>
+          <button className='btn btn-primary' onClick={apply}>Apply changes</button>
+        </div>
+      </div>
+    </>,
+    document.body,
+  )
+}
+
+/* ============================================================
+   Floating bulk-action bar — appears at the bottom of the screen while in
+   selection mode. Exposes bulk edit / move / status / priority / favorite /
+   archive / tag / delete, each funneling through the store's `bulk*` methods
+   (one store transition ⇒ one batched Supabase write ⇒ real-time sync).
+   Rendered globally so it works across EVERY view (lists, kanban, calendar).
+   ============================================================ */
+function BulkActionBar() {
+  const active = useSelection(s => s.active)
+  const ids = useSelection(s => s.ids)
+  const exit = useSelection(s => s.exit)
+  const projects = useData(s => s.projects)
+  const tags = useData(s => s.tags)
+  const allTasks = useData(s => s.tasks)
+  const bulkDelete = useData(s => s.bulkDelete)
+  const bulkMoveToProject = useData(s => s.bulkMoveToProject)
+  const bulkSetStatus = useData(s => s.bulkSetStatus)
+  const bulkSetPriority = useData(s => s.bulkSetPriority)
+  const bulkSetFavorite = useData(s => s.bulkSetFavorite)
+  const bulkArchive = useData(s => s.bulkArchive)
+  const bulkAddTag = useData(s => s.bulkAddTag)
+  const bulkRemoveTag = useData(s => s.bulkRemoveTag)
+  const ctx = useContextMenu()
+  const [editing, setEditing] = useState(false)
+  const [confirmDelete, setConfirmDelete] = useState(false)
+
+  const idList = useMemo(() => Array.from(ids), [ids])
+  const selectedTasks = useMemo(() => allTasks.filter(t => ids.has(t.id)), [allTasks, ids])
+  const allFavorite = selectedTasks.length > 0 && selectedTasks.every(t => t.favorite)
+  const allArchived = selectedTasks.length > 0 && selectedTasks.every(t => t.archived)
+
+  // Esc exits selection mode.
+  useEffect(() => {
+    if (!active) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') exit() }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [active, exit])
+
+  if (!active) return null
+
+  const openMenu = (e: React.MouseEvent, items: CtxItem[]) => ctx.open(e, items)
+
+  const statusItems: CtxItem[] = Object.entries(statusMeta).map(([k, v]) => ({
+    kind: 'item', label: v.label, icon: <span className='h-2 w-2 rounded-full inline-block' style={{ background: v.hex }} />,
+    onClick: () => bulkSetStatus(idList, k as Status),
+  }))
+  const priorityItems: CtxItem[] = Object.entries(priorityMeta).map(([k, v]) => ({
+    kind: 'item', label: v.label, onClick: () => bulkSetPriority(idList, k as Priority),
+  }))
+  const moveItems: CtxItem[] = [
+    { kind: 'item', label: 'No project', onClick: () => bulkMoveToProject(idList, undefined) },
+    ...projects.map<CtxItem>(p => ({ kind: 'item', label: p.name, icon: <span className='h-2 w-2 rounded-full inline-block' style={{ background: p.color }} />, onClick: () => bulkMoveToProject(idList, p.id) })),
+  ]
+  const tagItems: CtxItem[] = tags.length === 0
+    ? [{ kind: 'item', label: 'No tags yet', disabled: true, onClick: () => {} }]
+    : tags.flatMap<CtxItem>(t => ([
+        { kind: 'item', label: `Add: ${t.name}`, icon: <span className='h-2 w-2 rounded-full inline-block' style={{ background: t.color }} />, onClick: () => bulkAddTag(idList, t.id) },
+      ])).concat([{ kind: 'separator' }], tags.map<CtxItem>(t => ({ kind: 'item', label: `Remove: ${t.name}`, onClick: () => bulkRemoveTag(idList, t.id) })))
+
+  const count = idList.length
+
+  return createPortal(
+    <>
+      {ctx.node}
+      {editing && count > 0 && <BulkEditModal ids={idList} onClose={() => setEditing(false)} />}
+      {confirmDelete && (
+        <BulkDeleteConfirm
+          count={count}
+          onClose={() => setConfirmDelete(false)}
+          onConfirm={() => { bulkDelete(idList); setConfirmDelete(false); exit() }}
+        />
+      )}
+      <div className='bulk-action-bar'>
+        <div className='flex items-center gap-2'>
+          <span className='inline-flex items-center justify-center h-6 min-w-6 px-1.5 rounded-full bg-indigo-500 text-white text-xs font-semibold'>{count}</span>
+          <span className='text-sm font-medium hidden sm:inline'>selected</span>
+        </div>
+        <div className='h-5 w-px bg-[hsl(var(--border))] mx-1' />
+        <div className='flex items-center gap-1 flex-wrap'>
+          <button className='btn btn-ghost !h-8' disabled={!count} onClick={() => setEditing(true)}><Pencil className='h-3.5 w-3.5' />Edit</button>
+          <button className='btn btn-ghost !h-8' disabled={!count} onClick={(e) => openMenu(e, statusItems)}><CheckCircle2 className='h-3.5 w-3.5' />Status</button>
+          <button className='btn btn-ghost !h-8' disabled={!count} onClick={(e) => openMenu(e, priorityItems)}><AlertCircle className='h-3.5 w-3.5' />Priority</button>
+          <button className='btn btn-ghost !h-8' disabled={!count} onClick={(e) => openMenu(e, moveItems)}><FolderInput className='h-3.5 w-3.5' />Move</button>
+          <button className='btn btn-ghost !h-8' disabled={!count} onClick={(e) => openMenu(e, tagItems)}><TagIcon className='h-3.5 w-3.5' />Tags</button>
+          <button className='btn btn-ghost !h-8' disabled={!count} onClick={() => bulkSetFavorite(idList, !allFavorite)}><Star className={cn('h-3.5 w-3.5', allFavorite && 'fill-amber-400 text-amber-400')} />{allFavorite ? 'Unstar' : 'Star'}</button>
+          <button className='btn btn-ghost !h-8' disabled={!count} onClick={() => bulkArchive(idList, !allArchived)}><Archive className='h-3.5 w-3.5' />{allArchived ? 'Unarchive' : 'Archive'}</button>
+          <button className='btn btn-ghost !h-8 text-rose-600' disabled={!count} onClick={() => setConfirmDelete(true)}><Trash2 className='h-3.5 w-3.5' />Delete</button>
+        </div>
+        <div className='h-5 w-px bg-[hsl(var(--border))] mx-1' />
+        <button className='btn btn-ghost !h-8' onClick={exit} aria-label='Exit selection'><X className='h-4 w-4' />Done</button>
+      </div>
+    </>,
+    document.body,
+  )
+}
+
+/* Confirmation for a bulk delete — no name-typing (too many items), just a
+   clear count + confirm. Matches the visual language of DeleteConfirm. */
+function BulkDeleteConfirm({ count, onClose, onConfirm }: { count: number; onClose: () => void; onConfirm: () => void }) {
+  return createPortal(
+    <>
+      <div className='popup-overlay' onClick={onClose} />
+      <div className='popup-shell panel p-0' style={{ maxWidth: 420 }}>
+        <div className='p-4 border-b'>
+          <div className='text-sm font-semibold'>Delete {count} task{count === 1 ? '' : 's'}?</div>
+          <div className='mt-1 text-xs text-zinc-500'>This also removes their direct subtasks. This action cannot be undone here (use Undo afterwards if needed).</div>
+        </div>
+        <div className='flex items-center justify-end gap-2 px-4 py-3 border-t bg-zinc-50 dark:bg-zinc-900'>
+          <button className='btn btn-secondary' onClick={onClose}>Cancel</button>
+          <button className='btn btn-primary' style={{ background: '#dc2626' }} onClick={onConfirm}>
+            <Trash2 className='h-4 w-4' /> Delete {count}
+          </button>
+        </div>
+      </div>
+    </>,
+    document.body,
+  )
+}
+
 /* ------------------------------------------------------------------
    Quick Settings popup — a compact shortcut to the main Settings page.
    Contains the exact same settings (via <SettingsContent compact />),
@@ -4002,62 +4591,177 @@ function QuickSettingsPopup() {
   )
 }
 
-function ProjectsPage() {
-  const projects = useData(s => s.projects)
+/**
+ * A single draggable/sortable project card on the Projects page.
+ * Supports:
+ *  - Left-click "…" button OR right-click context menu (buildProjectMenu)
+ *  - Drag-and-drop reordering (persisted via reorderProjects → Supabase)
+ *  - Description shown only when App Settings → showProjectDescriptions is on
+ */
+function ProjectCard({ project, compact }: { project: Project; compact: boolean }) {
   const tasks = useData(s => s.tasks)
-  const compactMode = useUI(s => s.compactMode)
+  const updateProject = useData(s => s.updateProject)
+  const deleteProject = useData(s => s.deleteProject)
+  const showDescriptions = useUI(s => s.showProjectDescriptions)
+  const dndEnabled = useDndEnabled()
+  const ctx = useContextMenu()
+  const [renaming, setRenaming] = useState(false)
+  const [editingIcon, setEditingIcon] = useState(false)
+  const [confirming, setConfirming] = useState(false)
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: project.id })
+  const style = { transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.5 : 1 }
+
+  const items = tasks.filter(t => t.projectId === project.id && !t.archived)
+  const done = items.filter(t => t.status === 'done').length
+  const pct = items.length ? Math.round(done / items.length * 100) : 0
+
+  const openMenu = (e: React.MouseEvent) => {
+    e.preventDefault(); e.stopPropagation()
+    ctx.open(e, buildProjectMenu(project, {
+      onRename: () => setRenaming(true),
+      onEditIcon: () => setEditingIcon(true),
+      onCopyLink: () => { try { navigator.clipboard?.writeText(window.location.origin + '/projects/' + project.id) } catch {} },
+      onOpenNewTab: () => window.open(window.location.origin + '/projects/' + project.id, '_blank'),
+      onDelete: () => setConfirming(true),
+    }))
+  }
+
   return (
-    <div className='p-6 overflow-y-auto h-full'>
-      {compactMode ? (
-        <div className='space-y-2'>
-          {projects.map(p => {
-            const items = tasks.filter(t => t.projectId === p.id && !t.archived)
-            const done = items.filter(t => t.status === 'done').length
-            const pct = items.length ? Math.round(done / items.length * 100) : 0
-            return (
-              <NavLink key={p.id} to={`/projects/${p.id}`} className='panel px-3 py-3 flex items-center gap-3 hover:shadow-sm transition'>
-                <IconProject name={p.icon} color={p.color} className='!h-9 !w-9' />
-                <div className='min-w-0 flex-1'>
-                  <div className='flex items-center gap-2'>
-                    <div className='text-sm font-semibold truncate'>{p.name}</div>
-                    {p.favorite && <Star className='h-3 w-3 fill-amber-400 text-amber-400 shrink-0' />}
-                    <span className='ml-auto text-[10px] text-zinc-500'>{items.length} tasks</span>
-                  </div>
-                  <div className='mt-1 flex items-center gap-2 text-[11px] text-zinc-500'>
-                    <span>{done}/{items.length || 0} done</span>
-                    <span className='h-1 w-1 rounded-full bg-zinc-300 dark:bg-zinc-600' />
-                    <span>{pct}% complete</span>
-                  </div>
-                </div>
-              </NavLink>
-            )
-          })}
+    <>
+      {ctx.node}
+      {renaming && <NamePrompt title='Rename project' initial={project.name} label='Name' onClose={() => setRenaming(false)} onSave={(v) => updateProject(project.id, { name: v })} />}
+      {editingIcon && <IconPicker project={project} onClose={() => setEditingIcon(false)} />}
+      {confirming && <DeleteConfirm title='Delete project' name={project.name} onClose={() => setConfirming(false)} onConfirm={() => deleteProject(project.id)} />}
+      {compact ? (
+        <div ref={setNodeRef as any} style={style as React.CSSProperties} className='group relative'>
+          <NavLink to={`/projects/${project.id}`} onContextMenu={openMenu} className='panel px-3 py-3 flex items-center gap-3 hover:shadow-sm transition'>
+            {dndEnabled && (
+              <button {...attributes} {...listeners} className='opacity-30 hover:opacity-100 transition shrink-0' onClick={e => { e.preventDefault(); e.stopPropagation() }} aria-label='Drag to reorder'>
+                <GripVertical className='h-4 w-4 text-zinc-400' />
+              </button>
+            )}
+            <IconProject name={project.icon} color={project.color} className='!h-9 !w-9' />
+            <div className='min-w-0 flex-1'>
+              <div className='flex items-center gap-2'>
+                <div className='text-sm font-semibold truncate'>{project.name}</div>
+                {project.favorite && <Star className='h-3 w-3 fill-amber-400 text-amber-400 shrink-0' />}
+                <span className='ml-auto text-[10px] text-zinc-500'>{items.length} tasks</span>
+              </div>
+              {showDescriptions && project.description && (
+                <div className='mt-0.5 text-[11px] text-zinc-500 truncate'>{project.description}</div>
+              )}
+              <div className='mt-1 flex items-center gap-2 text-[11px] text-zinc-500'>
+                <span>{done}/{items.length || 0} done</span>
+                <span className='h-1 w-1 rounded-full bg-zinc-300 dark:bg-zinc-600' />
+                <span>{pct}% complete</span>
+              </div>
+            </div>
+            <button onClick={openMenu} className='opacity-0 group-hover:opacity-100 transition shrink-0 p-1 rounded hover:bg-zinc-100 dark:hover:bg-zinc-800' aria-label='Project options'>
+              <MoreHorizontal className='h-4 w-4 text-zinc-400' />
+            </button>
+          </NavLink>
         </div>
       ) : (
-        <div className='grid lg:grid-cols-3 md:grid-cols-2 gap-4'>
-          {projects.map(p => {
-            const items = tasks.filter(t => t.projectId === p.id && !t.archived)
-            const done = items.filter(t => t.status === 'done').length
-            const pct = items.length ? Math.round(done / items.length * 100) : 0
-            return (
-              <NavLink key={p.id} to={`/projects/${p.id}`} className='panel p-4 block hover:shadow-sm transition'>
-                <div className='flex items-start gap-3'>
-                  <IconProject name={p.icon} color={p.color} />
-                  <div className='flex-1 min-w-0'>
-                    <div className='flex items-center gap-2'>
-                      <div className='text-sm font-semibold truncate'>{p.name}</div>
-                      {p.favorite && <Star className='h-3 w-3 fill-amber-400 text-amber-400' />}
-                    </div>
-                    <div className='mt-1 text-xs text-zinc-500'>{p.description || 'Project workspace'}</div>
-                    <div className='mt-3 h-1.5 rounded-full bg-zinc-100 dark:bg-zinc-800 overflow-hidden'>
-                      <div className='h-full' style={{ width: `${pct}%`, background: p.color }} />
-                    </div>
-                  </div>
+        <div ref={setNodeRef as any} style={style as React.CSSProperties} className='group relative'>
+          <NavLink to={`/projects/${project.id}`} onContextMenu={openMenu} className='panel p-4 block hover:shadow-sm transition'>
+            <div className='flex items-start gap-3'>
+              <IconProject name={project.icon} color={project.color} />
+              <div className='flex-1 min-w-0'>
+                <div className='flex items-center gap-2'>
+                  <div className='text-sm font-semibold truncate'>{project.name}</div>
+                  {project.favorite && <Star className='h-3 w-3 fill-amber-400 text-amber-400' />}
                 </div>
-              </NavLink>
-            )
-          })}
+                {showDescriptions && (
+                  <div className='mt-1 text-xs text-zinc-500 line-clamp-2'>{project.description || 'No description'}</div>
+                )}
+                <div className='mt-3 h-1.5 rounded-full bg-zinc-100 dark:bg-zinc-800 overflow-hidden'>
+                  <div className='h-full' style={{ width: `${pct}%`, background: project.color }} />
+                </div>
+                <div className='mt-2 text-[11px] text-zinc-500'>{done}/{items.length || 0} done · {pct}%</div>
+              </div>
+            </div>
+          </NavLink>
+          {/* Drag handle (top-right) + options button (below it) surfaced on hover */}
+          <div className='absolute top-2 right-2 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition'>
+            {dndEnabled && (
+              <button {...attributes} {...listeners} className='p-1 rounded hover:bg-zinc-100 dark:hover:bg-zinc-800' onClick={e => { e.preventDefault(); e.stopPropagation() }} aria-label='Drag to reorder'>
+                <GripVertical className='h-4 w-4 text-zinc-400' />
+              </button>
+            )}
+            <button onClick={openMenu} className='p-1 rounded hover:bg-zinc-100 dark:hover:bg-zinc-800' aria-label='Project options'>
+              <MoreHorizontal className='h-4 w-4 text-zinc-400' />
+            </button>
+          </div>
         </div>
+      )}
+    </>
+  )
+}
+
+function ProjectsPage() {
+  const projects = useData(s => s.projects)
+  const reorderProjects = useData(s => s.reorderProjects)
+  const addProject = useData(s => s.addProject)
+  const compactMode = useUI(s => s.compactMode)
+  const [creating, setCreating] = useState(false)
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+    useSensor(TouchSensor, { activationConstraint: { delay: 260, tolerance: 5 } }),
+  )
+  const sorted = [...projects].sort((a, b) => a.order - b.order)
+  const projectIds = sorted.map(p => p.id)
+
+  const onDragEnd = (e: DragEndEvent) => {
+    if (!e.over || e.active.id === e.over.id) return
+    const from = projectIds.indexOf(String(e.active.id))
+    const to = projectIds.indexOf(String(e.over.id))
+    if (from < 0 || to < 0) return
+    reorderProjects(arrayMove(projectIds, from, to))
+  }
+
+  return (
+    <div className='p-6 overflow-y-auto h-full'>
+      {/* Header: New Project button top-left, per requirements */}
+      <div className='flex items-center gap-3 mb-5'>
+        <button className='btn btn-primary !h-9' onClick={() => setCreating(true)}>
+          <Plus className='h-4 w-4 mr-1' /> New Project
+        </button>
+        <div className='text-xs text-zinc-500'>{projects.length} {projects.length === 1 ? 'project' : 'projects'}</div>
+      </div>
+
+      {projects.length === 0 ? (
+        <div className='panel p-10 text-center text-sm text-zinc-500'>
+          <FolderKanban className='h-8 w-8 mx-auto mb-3 text-zinc-400' />
+          <div className='font-medium text-zinc-600 dark:text-zinc-300'>No projects yet</div>
+          <div className='mt-1'>Create your first project to organize tasks.</div>
+          <button className='btn btn-primary !h-9 mt-4' onClick={() => setCreating(true)}>
+            <Plus className='h-4 w-4 mr-1' /> New Project
+          </button>
+        </div>
+      ) : (
+        <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>
+          <SortableContext items={projectIds} strategy={compactMode ? verticalListSortingStrategy : rectSortingStrategy}>
+            {compactMode ? (
+              <div className='space-y-2'>
+                {sorted.map(p => <ProjectCard key={p.id} project={p} compact />)}
+              </div>
+            ) : (
+              <div className='grid lg:grid-cols-3 md:grid-cols-2 gap-4'>
+                {sorted.map(p => <ProjectCard key={p.id} project={p} compact={false} />)}
+              </div>
+            )}
+          </SortableContext>
+        </DndContext>
+      )}
+
+      {creating && (
+        <NamePrompt
+          title='New project'
+          initial=''
+          label='Project name'
+          onClose={() => setCreating(false)}
+          onSave={(v) => { addProject(v) }}
+        />
       )}
     </div>
   )
@@ -4094,11 +4798,18 @@ function KanbanTaskCard({ task, onDragStart, onDragEnd }: { task: Task; onDragSt
       onLocateCalendar: () => { useUI.getState().set({ calendarTarget: task.id }); navigate('/calendar') },
       onDelete: () => setConfirming(true),
       onAddSubtask: () => { useUI.getState().set({ selected: task.id, details: true }) },
+      onSelect: () => useSelection.getState().enter(task.id),
     }))
+  }
+  const selectionActive = useSelectionActive()
+  const isChecked = useIsSelected(task.id)
+  const handleCardClick = () => {
+    if (selectionActive) { useSelection.getState().toggle(task.id); return }
+    setUI({ selected: task.id, details: true })
   }
   return (
     <div
-      draggable={dndEnabled}
+      draggable={dndEnabled && !selectionActive}
       onDragStart={dndEnabled ? (e) => {
         e.dataTransfer.setData('text/plain', task.id)
         e.dataTransfer.effectAllowed = 'move'
@@ -4106,13 +4817,23 @@ function KanbanTaskCard({ task, onDragStart, onDragEnd }: { task: Task; onDragSt
       } : undefined}
       onDragEnd={dndEnabled ? onDragEnd : undefined}
       onContextMenu={isMobileTaskCard ? (e) => { e.preventDefault(); e.stopPropagation() } : openMenu}
-      onClick={() => setUI({ selected: task.id, details: true })}
-      className={cn('panel compact-card p-3 hover:shadow-sm transition', dndEnabled && 'cursor-grab active:cursor-grabbing')}
+      onClick={handleCardClick}
+      className={cn('panel compact-card p-3 hover:shadow-sm transition', dndEnabled && !selectionActive && 'cursor-grab active:cursor-grabbing', isChecked && 'is-multiselected ring-2 ring-indigo-500/50')}
     >
       {ctx.node}
       {renaming && <NamePrompt title='Rename task' initial={task.title} label='Title' onClose={() => setRenaming(false)} onSave={(v) => updateTask(task.id, { title: v })} />}
       {confirming && <DeleteConfirm title='Delete task' name={task.title} onClose={() => setConfirming(false)} onConfirm={() => deleteTask(task.id)} />}
       <div className='flex items-start gap-2'>
+        {(selectionActive) && (
+          <button
+            type='button'
+            onClick={e => { e.stopPropagation(); useSelection.getState().toggle(task.id) }}
+            className={cn('shrink-0 h-4 w-4 mt-0.5 rounded border inline-flex items-center justify-center transition', isChecked ? 'bg-indigo-500 border-indigo-500 text-white' : 'border-zinc-300 dark:border-zinc-600 text-transparent')}
+            aria-label={isChecked ? 'Deselect task' : 'Select task'}
+          >
+            <CheckCircle2 className='h-3 w-3' />
+          </button>
+        )}
         <div className='text-sm font-medium flex-1'>{task.title}</div>
         {subCount > 0 && (
           <span className='badge bg-black/5 dark:bg-white/5 text-[10px]' title={`${subDone}/${subCount} subtasks done`}>
@@ -4998,6 +5719,8 @@ function CalendarPage() {
   const calendarTarget = useUI(s => s.calendarTarget)
   const sidePanelEnabled = useUI(s => s.calendarSidePanel)
   const dndEnabled = useDndEnabled()
+  const selectionActive = useSelectionActive()
+  const selectedCount = useSelection(s => s.ids.size)
   const isMobile = useMedia('(max-width: 768px)')
   // Desktop-only fixed panel: only render when enabled in App Settings AND on
   // a desktop-width viewport (never on mobile, per requirements).
@@ -5186,18 +5909,28 @@ function CalendarPage() {
     return function CalendarEvent({ event }: { event: Event & { resource?: Task } }) {
       const task = event.resource
       const downRef = useRef<{ x: number; y: number } | null>(null)
+      // Multi-select awareness: in selection mode clicking an event toggles it.
+      const selectionActive = useSelectionActive()
+      const isChecked = useIsSelected(task?.id ?? '')
       if (!task) return <span className='calendar-event-title'>{event.title}</span>
       return (
-        <div className='calendar-event-content flex items-center gap-1.5 min-w-0'>
+        <div className={cn('calendar-event-content flex items-center gap-1.5 min-w-0', isChecked && 'calendar-event-selected')}>
           {/* Status checkbox — toggling never bubbles up to open the details
-              panel and never starts a calendar drag (stops pointerdown). */}
+              panel and never starts a calendar drag (stops pointerdown).
+              In selection mode this becomes a selection checkbox instead. */}
           <span
             className='calendar-event-check inline-flex shrink-0'
             onPointerDown={e => e.stopPropagation()}
             onMouseDown={e => e.stopPropagation()}
-            onClick={e => { e.stopPropagation(); e.preventDefault(); toggleDone(task.id) }}
+            onClick={e => {
+              e.stopPropagation(); e.preventDefault()
+              if (selectionActive) useSelection.getState().toggle(task.id)
+              else toggleDone(task.id)
+            }}
           >
-            <StatusDot status={task.status} onClick={() => {}} />
+            {selectionActive
+              ? <span className={cn('h-4 w-4 rounded border inline-flex items-center justify-center', isChecked ? 'bg-indigo-500 border-indigo-500 text-white' : 'border-zinc-400 text-transparent')}><CheckCircle2 className='h-3 w-3' /></span>
+              : <StatusDot status={task.status} onClick={() => {}} />}
           </span>
           <span
             className={cn('calendar-event-title truncate', task.status === 'done' && 'line-through opacity-60')}
@@ -5205,14 +5938,13 @@ function CalendarPage() {
             onClick={e => {
               const down = downRef.current
               downRef.current = null
-              // Only a genuine click (tiny/zero pointer travel) opens details.
-              // A drag moves the pointer beyond the threshold → do nothing so
-              // the reschedule drop is the only outcome.
+              // Only a genuine click (tiny/zero pointer travel) acts.
               if (down) {
                 const moved = Math.hypot(e.clientX - down.x, e.clientY - down.y)
                 if (moved > DRAG_THRESHOLD) return
               }
               e.stopPropagation()
+              if (selectionActive) { useSelection.getState().toggle(task.id); return }
               setUI({ selected: task.id, details: true })
             }}
           >
@@ -5241,6 +5973,15 @@ function CalendarPage() {
           <div className='text-xs sm:text-sm font-semibold truncate min-w-0 flex-1 sm:flex-initial'>
             {format(date, view === Views.MONTH ? 'MMMM yyyy' : isMobile ? 'EEE, MMM d' : 'MMM d, yyyy')}
           </div>
+          {/* Multi-select toggle: entering selection mode lets the user tap events
+              to build a selection that the global BulkActionBar then acts on. */}
+          <button
+            className={cn('btn !h-9 !px-3 text-xs sm:text-sm shrink-0', selectionActive ? 'btn-primary' : 'btn-secondary')}
+            onClick={() => selectionActive ? useSelection.getState().exit() : useSelection.getState().enter()}
+            title={selectionActive ? 'Exit selection mode' : 'Select multiple tasks'}
+          >
+            {selectionActive ? <><X className='h-4 w-4 sm:mr-1' /><span className='hidden sm:inline'>Done{selectedCount ? ` (${selectedCount})` : ''}</span></> : <><CheckCircle2 className='h-4 w-4 sm:mr-1' /><span className='hidden sm:inline'>Select</span></>}
+          </button>
           {/* Mobile: compact view-switcher as a select to save horizontal space */}
           {isMobile ? (
             <select
@@ -5617,10 +6358,46 @@ function QuickAdd() {
   const ui = useUI()
   const addTask = useData(s => s.addTask)
   const projects = useData(s => s.projects)
+  const tags = useData(s => s.tags)
+  const rememberEnabled = useUI(s => s.rememberLastTaskOptions)
+  // Derive the current view's creation context so the new task inherits it.
+  const { context, isUnassigned, buildDefaults } = useCreationContext()
   const { control, register, handleSubmit, watch, setValue, reset } = useForm<QuickForm>({ resolver: zodResolver(schema), defaultValues: { title: '', priority: 'medium', projectId: '' } })
   const title = watch('title')
   const parsed = parseNL(title || '')
-  useEffect(() => { if (ui.quick) reset() }, [ui.quick, reset])
+
+  // Seed the form each time the modal opens: start from view/remembered
+  // defaults so the fields reflect the context the user is creating in.
+  useEffect(() => {
+    if (!ui.quick) return
+    const defaults = buildDefaults()
+    reset({
+      title: '',
+      priority: (defaults.priority as Priority) ?? 'medium',
+      projectId: defaults.projectId ?? context.projectId ?? '',
+      dueDate: defaults.dueDate ?? context.dueDate ?? undefined,
+      time: undefined,
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ui.quick, reset])
+
+  // Human-readable summary of the inherited context, shown as a chip so the
+  // user understands where the task will land.
+  const contextLabel = (() => {
+    if (context.projectId) {
+      const p = projects.find(x => x.id === context.projectId)
+      return p ? `Project · ${p.name}` : null
+    }
+    if (context.dueDate === todayStr) return 'Scheduled · Today'
+    if (context.favorite) return 'Added to · Favorites'
+    if (context.status === 'done') return 'Created as · Completed'
+    if (context.archived) return 'Created in · Archive'
+    if (context.tags?.length) {
+      const tg = tags.find(x => x.id === context.tags![0])
+      return tg ? `Tagged · ${tg.name}` : null
+    }
+    return null
+  })()
 
   return (
     <AnimatePresence>
@@ -5635,11 +6412,51 @@ function QuickAdd() {
           >
             <form onSubmit={handleSubmit(v => {
               const nl = parseNL(v.title)
-              addTask({ title: nl.title, dueDate: v.dueDate || nl.dueDate, time: v.time || nl.time, priority: v.priority || nl.priority, projectId: v.projectId || undefined })
+              // Merge: view context is the base, form values override where set.
+              const chosenProjectId = v.projectId || context.projectId || undefined
+              const chosenPriority = v.priority || nl.priority || 'medium'
+              const newTask: Partial<Task> & { title: string } = {
+                title: nl.title,
+                dueDate: v.dueDate || nl.dueDate || context.dueDate,
+                time: v.time || nl.time,
+                priority: chosenPriority,
+                projectId: chosenProjectId,
+                // Inherit non-form context bits (favorite / status / archived / tags).
+                favorite: context.favorite,
+                status: context.status,
+                archived: context.archived,
+                tags: context.tags,
+              }
+              addTask(newTask)
+              // Remember the options for next time (no-op unless enabled).
+              rememberTaskOptionsIfEnabled({
+                priority: chosenPriority,
+                projectId: chosenProjectId,
+                tags: context.tags,
+              })
               ui.set({ quick: false })
             })}>
               <div className='p-4 border-b'>
                 <input {...register('title')} autoFocus className='w-full bg-transparent text-base font-semibold outline-none' placeholder='Design homepage tomorrow 2pm !high' />
+                {(contextLabel || rememberEnabled) && (
+                  <div className='mt-2 flex flex-wrap items-center gap-2'>
+                    {contextLabel && (
+                      <span className='inline-flex items-center gap-1 rounded-full bg-indigo-500/10 text-indigo-600 dark:text-indigo-300 px-2 py-0.5 text-[11px] font-medium'>
+                        <Target className='h-3 w-3' />{contextLabel}
+                      </span>
+                    )}
+                    {!contextLabel && isUnassigned && (
+                      <span className='inline-flex items-center gap-1 rounded-full bg-black/5 dark:bg-white/5 text-zinc-500 px-2 py-0.5 text-[11px]'>
+                        <Inbox className='h-3 w-3' />Unassigned
+                      </span>
+                    )}
+                    {rememberEnabled && (
+                      <span className='inline-flex items-center gap-1 rounded-full bg-black/5 dark:bg-white/5 text-zinc-500 px-2 py-0.5 text-[11px]'>
+                        <RotateCcw className='h-3 w-3' />Reusing last options
+                      </span>
+                    )}
+                  </div>
+                )}
               </div>
               {(parsed.dueDate || parsed.time || parsed.priority) && (
                 <div className='px-4 py-2 text-xs text-zinc-500 flex flex-wrap gap-3 border-b bg-zinc-50 dark:bg-zinc-900'>
@@ -6405,6 +7222,8 @@ function Layout() {
     // Close transient overlays whenever the route changes (prevents stuck
     // full-screen panel after deep-linking or back-navigation on mobile).
     ui.set({ mobileNav: false, command: false, filters: false, quick: false, details: false, selected: null })
+    // Selection is per-view ephemeral state — exit selection mode on navigation.
+    useSelection.getState().exit()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [location.pathname])
 
@@ -6533,6 +7352,7 @@ function Layout() {
       <CommandPalette />
       <FiltersPanel />
       <QuickSettingsPopup />
+      <BulkActionBar />
 
       {/* Keyboard-shortcut delete confirmation (Delete / Backspace on a
           selected task, or on the currently-viewed project). Reuses the

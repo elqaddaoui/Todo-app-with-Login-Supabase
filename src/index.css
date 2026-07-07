@@ -3509,3 +3509,52 @@ body.is-dnd-dragging *{
   text-underline-offset: 3px;
 }
 .auth-switch a:hover{ text-decoration: underline; }
+
+/* ============================================================
+   Multi-select — selected task highlight + floating bulk-action bar
+   ============================================================ */
+.task-row.is-multiselected{
+  box-shadow: inset 0 0 0 2px hsl(238 84% 60% / 0.55);
+  background: hsl(238 84% 60% / 0.06);
+}
+.dark .task-row.is-multiselected{
+  background: hsl(238 84% 60% / 0.12);
+}
+
+/* Bottom-centered floating action bar shown in selection mode. */
+.bulk-action-bar{
+  position: fixed;
+  left: 50%;
+  bottom: 20px;
+  transform: translateX(-50%);
+  z-index: 900;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: calc(100vw - 24px);
+  padding: 8px 12px;
+  border-radius: 16px;
+  border: 1px solid hsl(var(--border));
+  background: hsl(var(--card));
+  color: hsl(var(--card-foreground));
+  box-shadow: 0 12px 40px rgba(0,0,0,0.18), 0 2px 8px rgba(0,0,0,0.10);
+  overflow-x: auto;
+  scrollbar-width: none;
+  animation: bulkBarIn 0.18s ease-out;
+}
+.bulk-action-bar::-webkit-scrollbar{ display: none; }
+@keyframes bulkBarIn{
+  from{ opacity: 0; transform: translate(-50%, 12px); }
+  to{ opacity: 1; transform: translate(-50%, 0); }
+}
+@media (max-width: 640px){
+  .bulk-action-bar{ bottom: 12px; padding: 6px 8px; }
+}
+
+/* Selected calendar event chip: a clear ring so the selection reads at a
+   glance inside the dense calendar grid. */
+.calendar-event-selected{
+  outline: 2px solid hsl(238 84% 60% / 0.9);
+  outline-offset: 1px;
+  border-radius: 6px;
+}
