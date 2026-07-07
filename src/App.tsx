@@ -35,7 +35,8 @@ import {
   Copy, Link as LinkIcon, ExternalLink, FolderInput, Tag as TagIcon,
   Image as ImageIcon, MapPinned, ArrowUp, ArrowDown, Move, SlidersHorizontal,
   Undo2, Redo2, RotateCcw, LogOut,
-  ChevronRight as ChevronRightIcon, User, Mail, KeyRound, ShieldCheck, Eye, EyeOff, Loader2, Save, ArrowLeft
+  ChevronRight as ChevronRightIcon, User, Mail, KeyRound, ShieldCheck, Eye, EyeOff, Loader2, Save, ArrowLeft,
+  ZoomIn, ZoomOut, Download, Maximize2
 } from 'lucide-react'
 import { createPortal } from 'react-dom'
 
@@ -335,6 +336,10 @@ const useData = create<{
   bulkArchive: (ids: string[], archived: boolean) => void;
   bulkAddTag: (ids: string[], tagId: string) => void;
   bulkRemoveTag: (ids: string[], tagId: string) => void;
+  // ---- Multi-select drag-and-drop. Move a whole selection at once while
+  // preserving the selection's relative order and existing behavior. ----
+  bulkSetParent: (ids: string[], parentId: string | undefined) => void;
+  bulkReorder: (ids: string[], targetId: string, placeAfter: boolean) => void;
   addProject: (name: string) => void;
   updateProject: (id: string, p: Partial<Project>) => void;
   duplicateProject: (id: string) => void;
@@ -498,6 +503,109 @@ const useData = create<{
       const stamp = nowIso()
       return { tasks: s.tasks.map(t => idSet.has(t.id) && t.tags.includes(tagId) ? { ...t, tags: t.tags.filter(x => x !== tagId), updatedAt: stamp } : t) }
     }),
+    /* ---- Multi-select drag: reparent a whole group as subtasks of `parentId`.
+       Every selected task (and its descendant subtree) is re-parented under the
+       new owner, inheriting its projectId so the group stays coherent. Tasks
+       that are descendants of another selected task are skipped (they move with
+       their ancestor). Cycles are prevented (can't drop a group into one of its
+       own members / descendants). Selection order is preserved. */
+    bulkSetParent: (ids, parentId) => set(s => {
+      const stamp = nowIso()
+      const byId = new Map(s.tasks.map(t => [t.id, t]))
+      // Reject the target if it is one of the moved tasks or a descendant of any.
+      const movedSet = new Set(ids)
+      const isInsideMoved = (start: string | undefined): boolean => {
+        let cur = start
+        while (cur) { if (movedSet.has(cur)) return true; cur = byId.get(cur)?.parentId }
+        return false
+      }
+      if (parentId && isInsideMoved(parentId)) return {}
+      // Drop any selected id that is a descendant of another selected id — it
+      // travels with its ancestor, so moving it independently is redundant.
+      const roots = ids.filter(id => {
+        let cur = byId.get(id)?.parentId
+        while (cur) { if (movedSet.has(cur)) return false; cur = byId.get(cur)?.parentId }
+        return true
+      })
+      const newProjectId = parentId ? byId.get(parentId)?.projectId : undefined
+      // Collect each root plus its full descendant subtree so projectId cascades.
+      const descendantsOf = (root: string): Set<string> => {
+        const out = new Set<string>()
+        const walk = (r: string) => s.tasks.forEach(t => { if (t.parentId === r && !out.has(t.id)) { out.add(t.id); walk(t.id) } })
+        walk(root)
+        return out
+      }
+      const rootSet = new Set(roots)
+      const subtreeMembers = new Set<string>()
+      roots.forEach(r => descendantsOf(r).forEach(d => subtreeMembers.add(d)))
+      let tasks = s.tasks.map(t => {
+        if (rootSet.has(t.id)) return { ...t, parentId, projectId: newProjectId ?? t.projectId, updatedAt: stamp }
+        if (subtreeMembers.has(t.id) && newProjectId) return { ...t, projectId: newProjectId, updatedAt: stamp }
+        return t
+      })
+      // Status propagation: if any moved node isn't Done, no Done ancestor stays Done.
+      if (parentId) {
+        const anyUnfinished = roots.some(id => {
+          const t = tasks.find(x => x.id === id)
+          return t && t.status !== 'done' && t.status !== 'cancelled'
+        })
+        if (anyUnfinished) tasks = propagateUnfinishedUp(tasks, parentId)
+      }
+      return { tasks }
+    }),
+    /* ---- Multi-select drag: reorder a whole group next to `targetId`.
+       The selected "root" tasks (excluding descendants of other selected tasks)
+       are first re-parented to the target's parent (so they become siblings),
+       then repositioned together immediately before/after the target while
+       preserving their internal relative order. */
+    bulkReorder: (ids, targetId, placeAfter) => set(s => {
+      const stamp = nowIso()
+      const byId = new Map(s.tasks.map(t => [t.id, t]))
+      const target = byId.get(targetId)
+      if (!target) return {}
+      const movedSet = new Set(ids)
+      if (movedSet.has(targetId)) return {}
+      // Reject if target is inside the moved subtree (cycle).
+      const isInsideMoved = (start: string | undefined): boolean => {
+        let cur = start
+        while (cur) { if (movedSet.has(cur)) return true; cur = byId.get(cur)?.parentId }
+        return false
+      }
+      if (isInsideMoved(target.parentId)) return {}
+      // Root movers only (skip descendants of other selected tasks), in the
+      // order they currently appear in the list so relative order is preserved.
+      const rootMovers = s.tasks
+        .filter(t => movedSet.has(t.id))
+        .filter(t => { let cur = t.parentId; while (cur) { if (movedSet.has(cur)) return false; cur = byId.get(cur)?.parentId } return true })
+        .sort((a, b) => a.order - b.order)
+        .map(t => t.id)
+      if (rootMovers.length === 0) return {}
+      const targetParent = target.parentId
+      const newProjectId = targetParent ? byId.get(targetParent)?.projectId : target.projectId
+      // Reparent movers (and cascade projectId to their subtrees) to the target's parent.
+      const rootMoverSet = new Set(rootMovers)
+      const subtreeMembers = new Set<string>()
+      const collect = (root: string) => s.tasks.forEach(t => { if (t.parentId === root && !subtreeMembers.has(t.id)) { subtreeMembers.add(t.id); collect(t.id) } })
+      rootMovers.forEach(collect)
+      let tasks = s.tasks.map(t => {
+        if (rootMoverSet.has(t.id)) return { ...t, parentId: targetParent, projectId: newProjectId ?? t.projectId, updatedAt: stamp }
+        if (subtreeMembers.has(t.id) && newProjectId) return { ...t, projectId: newProjectId, updatedAt: stamp }
+        return t
+      })
+      // Rebuild the sibling order under targetParent, inserting the movers as a
+      // contiguous block before/after the target.
+      const siblings = tasks
+        .filter(t => (t.parentId || '') === (targetParent || '') && !t.archived)
+        .sort((a, b) => a.order - b.order)
+        .map(t => t.id)
+      const remaining = siblings.filter(id => !rootMoverSet.has(id))
+      const tIdx = remaining.indexOf(targetId)
+      const insertAt = tIdx < 0 ? remaining.length : (placeAfter ? tIdx + 1 : tIdx)
+      const nextOrder = [...remaining.slice(0, insertAt), ...rootMovers, ...remaining.slice(insertAt)]
+      const orderMap = new Map(nextOrder.map((id, i) => [id, i]))
+      tasks = tasks.map(t => orderMap.has(t.id) ? { ...t, order: orderMap.get(t.id)!, updatedAt: stamp } : t)
+      return { tasks }
+    }),
     addProject: (name) => set(s => ({
       projects: [...s.projects, {
         id: newId(), name, icon: 'FolderKanban',
@@ -597,6 +705,35 @@ const useSelection = create<{
 /** Convenience: is a given task currently selected? (reactive) */
 const useIsSelected = (id: string) => useSelection(s => s.ids.has(id))
 const useSelectionActive = () => useSelection(s => s.active)
+
+/* ============================================================
+   Visible-tasks registry
+   ------------------------------------------------------------
+   The currently-"previewed" task ids of the active view. Each mounted
+   TaskList registers the (ordered) ids it is rendering here; the global
+   Ctrl/Cmd+A shortcut reads this to "select all previewed tasks". Kept as a
+   tiny module-level store (not React state) so the global keydown handler can
+   read it synchronously without prop-drilling through the whole tree.
+
+   Multiple TaskLists can be mounted at once (e.g. a page list + a details
+   panel's subtask list). We keep a keyed map and expose the UNION of all
+   registered lists, de-duplicated while preserving first-seen order, so
+   Ctrl+A selects everything on screen. ============================================================ */
+const visibleTasksRegistry = new Map<string, string[]>()
+function setVisibleTaskIds(key: string, ids: string[]) {
+  visibleTasksRegistry.set(key, ids)
+}
+function clearVisibleTaskIds(key: string) {
+  visibleTasksRegistry.delete(key)
+}
+function getAllVisibleTaskIds(): string[] {
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const ids of visibleTasksRegistry.values()) {
+    for (const id of ids) if (!seen.has(id)) { seen.add(id); out.push(id) }
+  }
+  return out
+}
 
 /* ============================================================
    Global Command-based Undo / Redo system
@@ -1615,6 +1752,196 @@ function buildProjectMenu(
   ]
 }
 
+/* ============================================================
+   Image lightbox / preview popup
+   ------------------------------------------------------------
+   A clean, responsive full-screen preview for task images. Any image thumbnail
+   in the app opens it via `openLightbox(images, index)`. Features:
+     • Zoom in / out (buttons, +/- keys, mouse wheel) with pan when zoomed.
+     • Next / previous navigation (buttons, ← / → keys) that loops.
+     • Download the current image.
+     • Close (button, Esc, backdrop click).
+   The existing task/detail UI is untouched — this overlays on top and restores
+   scroll + focus on close.
+   ============================================================ */
+type LightboxImage = { id: string; url: string; name?: string }
+const useLightbox = create<{
+  open: boolean
+  images: LightboxImage[]
+  index: number
+  openAt: (images: LightboxImage[], index: number) => void
+  close: () => void
+  setIndex: (i: number) => void
+}>((set) => ({
+  open: false,
+  images: [],
+  index: 0,
+  openAt: (images, index) => set({ open: images.length > 0, images, index: Math.max(0, Math.min(index, images.length - 1)) }),
+  close: () => set({ open: false }),
+  setIndex: (i) => set(s => ({ index: s.images.length ? (i + s.images.length) % s.images.length : 0 })),
+}))
+/** Convenience helper usable from anywhere (event handlers) without a hook. */
+const openLightbox = (images: LightboxImage[], index: number) => useLightbox.getState().openAt(images, index)
+
+function ImageLightbox() {
+  const { open, images, index, close, setIndex } = useLightbox()
+  const [zoom, setZoom] = useState(1)
+  const [pan, setPan] = useState({ x: 0, y: 0 })
+  const dragRef = useRef<{ active: boolean; sx: number; sy: number; ox: number; oy: number }>({ active: false, sx: 0, sy: 0, ox: 0, oy: 0 })
+
+  const current = images[index]
+
+  // Reset zoom/pan whenever the visible image changes or the box (re)opens.
+  useEffect(() => { setZoom(1); setPan({ x: 0, y: 0 }) }, [index, open])
+
+  const clampZoom = (z: number) => Math.min(5, Math.max(1, Math.round(z * 100) / 100))
+  const zoomIn = () => setZoom(z => clampZoom(z + 0.25))
+  const zoomOut = () => setZoom(z => { const n = clampZoom(z - 0.25); if (n === 1) setPan({ x: 0, y: 0 }); return n })
+  const resetZoom = () => { setZoom(1); setPan({ x: 0, y: 0 }) }
+  const next = () => setIndex(index + 1)
+  const prev = () => setIndex(index - 1)
+
+  const download = async () => {
+    if (!current) return
+    try {
+      const res = await fetch(current.url)
+      const blob = await res.blob()
+      const href = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = href
+      a.download = current.name || `image-${index + 1}`
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      setTimeout(() => URL.revokeObjectURL(href), 1000)
+    } catch {
+      // Fallback for cross-origin URLs / data URLs that fetch may reject:
+      // open in a new tab so the user can still save it.
+      const a = document.createElement('a')
+      a.href = current.url
+      a.download = current.name || `image-${index + 1}`
+      a.target = '_blank'
+      a.rel = 'noopener'
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+    }
+  }
+
+  // Keyboard controls. Registered only while open.
+  useEffect(() => {
+    if (!open) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') { e.preventDefault(); close() }
+      else if (e.key === 'ArrowRight') { e.preventDefault(); next() }
+      else if (e.key === 'ArrowLeft') { e.preventDefault(); prev() }
+      else if (e.key === '+' || e.key === '=') { e.preventDefault(); zoomIn() }
+      else if (e.key === '-' || e.key === '_') { e.preventDefault(); zoomOut() }
+      else if (e.key === '0') { e.preventDefault(); resetZoom() }
+    }
+    window.addEventListener('keydown', onKey)
+    // Lock background scroll while the lightbox is open.
+    const prevOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    return () => {
+      window.removeEventListener('keydown', onKey)
+      document.body.style.overflow = prevOverflow
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, index, images.length])
+
+  if (!open || !current) return null
+
+  const onWheel = (e: React.WheelEvent) => {
+    e.preventDefault()
+    if (e.deltaY < 0) zoomIn(); else zoomOut()
+  }
+  const onPointerDown = (e: React.PointerEvent) => {
+    if (zoom <= 1) return
+    dragRef.current = { active: true, sx: e.clientX, sy: e.clientY, ox: pan.x, oy: pan.y }
+    ;(e.target as Element).setPointerCapture?.(e.pointerId)
+  }
+  const onPointerMove = (e: React.PointerEvent) => {
+    if (!dragRef.current.active) return
+    setPan({ x: dragRef.current.ox + (e.clientX - dragRef.current.sx), y: dragRef.current.oy + (e.clientY - dragRef.current.sy) })
+  }
+  const onPointerUp = () => { dragRef.current.active = false }
+
+  const multiple = images.length > 1
+
+  return createPortal(
+    <div className='lightbox-overlay' role='dialog' aria-modal='true' aria-label='Image preview' onClick={close}>
+      {/* Toolbar */}
+      <div className='lightbox-toolbar' onClick={e => e.stopPropagation()}>
+        <div className='lightbox-title' title={current.name || 'Image'}>
+          {current.name || 'Image'}{multiple && <span className='lightbox-counter'> · {index + 1}/{images.length}</span>}
+        </div>
+        <div className='lightbox-tools'>
+          <button className='lightbox-btn' onClick={zoomOut} disabled={zoom <= 1} aria-label='Zoom out'><ZoomOut className='h-5 w-5' /></button>
+          <span className='lightbox-zoom' aria-live='polite'>{Math.round(zoom * 100)}%</span>
+          <button className='lightbox-btn' onClick={zoomIn} disabled={zoom >= 5} aria-label='Zoom in'><ZoomIn className='h-5 w-5' /></button>
+          <button className='lightbox-btn' onClick={resetZoom} disabled={zoom === 1} aria-label='Reset zoom'><Maximize2 className='h-5 w-5' /></button>
+          <button className='lightbox-btn' onClick={download} aria-label='Download image'><Download className='h-5 w-5' /></button>
+          <button className='lightbox-btn' onClick={close} aria-label='Close preview'><X className='h-5 w-5' /></button>
+        </div>
+      </div>
+
+      {/* Prev / Next */}
+      {multiple && (
+        <button className='lightbox-nav lightbox-nav-prev' onClick={e => { e.stopPropagation(); prev() }} aria-label='Previous image'>
+          <ChevronLeft className='h-7 w-7' />
+        </button>
+      )}
+      {multiple && (
+        <button className='lightbox-nav lightbox-nav-next' onClick={e => { e.stopPropagation(); next() }} aria-label='Next image'>
+          <ChevronRight className='h-7 w-7' />
+        </button>
+      )}
+
+      {/* Stage */}
+      <div
+        className='lightbox-stage'
+        onClick={e => e.stopPropagation()}
+        onWheel={onWheel}
+        onDoubleClick={() => (zoom > 1 ? resetZoom() : zoomIn())}
+      >
+        <img
+          src={current.url}
+          alt={current.name || 'Task image'}
+          className='lightbox-image'
+          draggable={false}
+          onPointerDown={onPointerDown}
+          onPointerMove={onPointerMove}
+          onPointerUp={onPointerUp}
+          onPointerCancel={onPointerUp}
+          style={{
+            transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
+            cursor: zoom > 1 ? (dragRef.current.active ? 'grabbing' : 'grab') : 'zoom-in',
+          }}
+        />
+      </div>
+
+      {/* Thumbnail strip */}
+      {multiple && (
+        <div className='lightbox-thumbs' onClick={e => e.stopPropagation()}>
+          {images.map((im, i) => (
+            <button
+              key={im.id}
+              className={cn('lightbox-thumb', i === index && 'is-active')}
+              onClick={() => setIndex(i)}
+              aria-label={`View image ${i + 1}`}
+              aria-current={i === index}
+            >
+              <img src={im.url} alt={im.name || `Image ${i + 1}`} />
+            </button>
+          ))}
+        </div>
+      )}
+    </div>,
+    document.body,
+  )
+}
+
 /* Edit-name modal (used by Rename actions) */
 function NamePrompt({ title, initial, label = 'Name', onClose, onSave }: { title: string; initial: string; label?: string; onClose: () => void; onSave: (v: string) => void }) {
   const [v, setV] = useState(initial)
@@ -1885,10 +2212,40 @@ function TaskRow({ task, showProject = true, depth = 0 }: { task: Task; showProj
   // Once a drag begins anywhere, immediately kill any pending long-press timer
   // on this row so it can't fire after the drag ends either.
   useEffect(() => { if (anyDragActive) cancelLongPress() }, [anyDragActive])
+  /* True when the touch started on an interactive control (status checkbox,
+     select checkbox, favorite/menu/expand buttons, drag handle, inputs). A
+     long-press there must NOT enter multi-select — the checkbox tap has to
+     stay a pure "toggle status" gesture (see Task: mobile gesture conflict). */
+  const touchStartedOnControl = (target: EventTarget | null): boolean => {
+    if (!(target instanceof Element)) return false
+    return !!target.closest(
+      'button, a, input, textarea, select, [role="button"], .task-drag-handle, .task-select-checkbox, .subtask-toggle, .task-favorite-toggle, .task-row-menu',
+    )
+  }
+
   const onTouchStart = (e: React.TouchEvent) => {
-    if (isMobileTaskCard) return
     const t = e.touches[0]
     longPressRef.current = { t: null, x: t.clientX, y: t.clientY, fired: false }
+    // ---- Mobile: long-press the ROW BODY (never a control) to enter
+    // multi-select mode. This is the ONLY way selection activates on touch, so
+    // a normal tap can never accidentally select, and a tap on the status
+    // checkbox only toggles status. ----
+    if (isMobileTaskCard) {
+      if (touchStartedOnControl(e.target)) return
+      longPressRef.current.t = setTimeout(() => {
+        // Never hijack an in-progress drag.
+        if (anyDragActiveRef.current || dragActiveStore.get()) { cancelLongPress(); return }
+        longPressRef.current.fired = true
+        // Haptic nudge where supported so the mode switch is felt, not guessed.
+        try { navigator.vibrate?.(15) } catch {}
+        const sel = useSelection.getState()
+        if (sel.active) sel.toggle(task.id)
+        else sel.enter(task.id)
+      }, 450)
+      return
+    }
+    // ---- Desktop-ish touch (tablet in wide layout): long-press opens the
+    // task context menu (existing behavior). ----
     longPressRef.current.t = setTimeout(() => {
       // Guard: never open the context menu once a drag is in progress. This is
       // the key fix — the drag preview is the ONLY drag-related visual allowed.
@@ -1900,8 +2257,9 @@ function TaskRow({ task, showProject = true, depth = 0 }: { task: Task; showProj
     }, 500)
   }
   const onTouchMove = (e: React.TouchEvent) => {
-    if (isMobileTaskCard) return
     const t = e.touches[0]
+    // Any real movement (scroll / drag) cancels the pending long-press so it
+    // never fires after the user has started scrolling the list.
     if (Math.abs(t.clientX - longPressRef.current.x) > 6 || Math.abs(t.clientY - longPressRef.current.y) > 6) cancelLongPress()
   }
 
@@ -1912,6 +2270,8 @@ function TaskRow({ task, showProject = true, depth = 0 }: { task: Task; showProj
   const nestHighlight = drop.mode === 'inside'
   const lineAbove = drop.mode === 'above'
   const lineBelow = drop.mode === 'below'
+  // Dim non-active members of the group currently being dragged.
+  const inDragGroup = useIsInDragGroup(task.id)
 
   // When THIS row is the one being dragged, skip rendering its content and
   // collapse the wrapper to zero height so it takes no space in the layout.
@@ -1937,7 +2297,7 @@ function TaskRow({ task, showProject = true, depth = 0 }: { task: Task; showProj
         ref={setNodeRef}
         {...rowDragAttributes}
         {...rowDragListeners}
-        className={cn('group panel p-3 task-row', dndEnabled && !selectionActive && 'cursor-grab active:cursor-grabbing task-row-draggable', isSelected && 'is-selected', isChecked && 'is-multiselected', nestHighlight && 'task-row-nest-target', isContextParent && 'task-row-search-context')}
+        className={cn('group panel p-3 task-row', dndEnabled && !selectionActive && 'cursor-grab active:cursor-grabbing task-row-draggable', isSelected && 'is-selected', isChecked && 'is-multiselected', nestHighlight && 'task-row-nest-target', isContextParent && 'task-row-search-context', inDragGroup && 'task-row-drag-group')}
         onClick={handleRowClick}
         onContextMenu={isMobileTaskCard ? (e) => { e.preventDefault(); e.stopPropagation() } : openMenu}
         onTouchStart={onTouchStart}
@@ -2013,10 +2373,26 @@ function TaskRow({ task, showProject = true, depth = 0 }: { task: Task; showProj
             {task.description && <div className='compact-hide mt-0.5 text-xs text-zinc-500 line-clamp-1'>{task.description}</div>}
             {!!task.images?.length && (
               <div className='compact-hide mt-2 flex items-center gap-2 overflow-x-auto pb-1'>
-                {task.images.slice(0, 3).map(img => (
-                  <img key={img.id} src={img.url} alt={img.name || task.title} className='h-10 w-10 rounded-lg object-cover border border-black/5 dark:border-white/10 shrink-0' />
+                {task.images.slice(0, 3).map((img, i) => (
+                  <button
+                    key={img.id}
+                    type='button'
+                    className='task-image-thumb shrink-0'
+                    onPointerDown={e => e.stopPropagation()}
+                    onClick={e => { e.stopPropagation(); openLightbox(task.images!, i) }}
+                    aria-label={`Preview image ${img.name || i + 1}`}
+                  >
+                    <img src={img.url} alt={img.name || task.title} className='h-10 w-10 rounded-lg object-cover border border-black/5 dark:border-white/10' />
+                  </button>
                 ))}
-                {task.images.length > 3 && <span className='text-[11px] text-zinc-500'>+{task.images.length - 3} more</span>}
+                {task.images.length > 3 && (
+                  <button
+                    type='button'
+                    className='text-[11px] text-zinc-500 hover:text-indigo-600 shrink-0'
+                    onPointerDown={e => e.stopPropagation()}
+                    onClick={e => { e.stopPropagation(); openLightbox(task.images!, 3) }}
+                  >+{task.images.length - 3} more</button>
+                )}
               </div>
             )}
             <div className={cn('compact-row-meta', !compactMode && 'mt-2 flex flex-wrap gap-x-3 gap-y-2 text-[11px] text-zinc-500', compactMode && 'flex items-center gap-x-3 text-[11px] text-zinc-500')}>
@@ -2158,13 +2534,17 @@ type DropIndicator = { targetId: string; mode: DropMode } | null
    insertion indicator) exactly WHERE it will land. Rendered inside dnd-kit's
    <DragOverlay>, so it follows the finger without disturbing list layout.
    ============================================================ */
-function TaskDragPreview({ task }: { task: Task }) {
+function TaskDragPreview({ task, groupCount = 0 }: { task: Task; groupCount?: number }) {
   const projects = useData(s => s.projects)
   const tags = useData(s => s.tags)
   const p = projects.find(x => x.id === task.projectId)
   const ts = tags.filter(t => task.tags.includes(t.id))
+  const isGroup = groupCount > 1
   return (
-    <div className='task-drag-preview panel p-3'>
+    <div className={cn('task-drag-preview panel p-3', isGroup && 'task-drag-preview-group')}>
+      {isGroup && (
+        <span className='task-drag-count' aria-hidden='true'>{groupCount}</span>
+      )}
       <div className='flex gap-3 items-start'>
         <span className='mt-0.5'>{(() => { const I = statusMeta[task.status].icon; return <I className={cn('h-4 w-4', statusMeta[task.status].color)} /> })()}</span>
         <div className='min-w-0 flex-1'>
@@ -2196,12 +2576,18 @@ function TaskDragPreview({ task }: { task: Task }) {
   )
 }
 
-const DropIndicatorCtx = React.createContext<{ indicator: DropIndicator; activeId: string | null }>({ indicator: null, activeId: null })
+const DropIndicatorCtx = React.createContext<{ indicator: DropIndicator; activeId: string | null; dragGroup: Set<string> | null }>({ indicator: null, activeId: null, dragGroup: null })
 const useDropIndicator = (taskId: string) => {
   const { indicator, activeId } = React.useContext(DropIndicatorCtx)
   if (activeId === taskId) return { isActive: true, mode: null as DropMode | null }
   if (!indicator || indicator.targetId !== taskId) return { isActive: false, mode: null as DropMode | null }
   return { isActive: false, mode: indicator.mode }
+}
+/** True when this task is a NON-active member of the group currently being
+ *  dragged — used to dim it so the whole selection reads as "in flight". */
+const useIsInDragGroup = (taskId: string) => {
+  const { activeId, dragGroup } = React.useContext(DropIndicatorCtx)
+  return !!dragGroup && dragGroup.has(taskId) && activeId !== taskId
 }
 /** True when ANY task in the current DndContext is being dragged. Used by
  *  TaskRow (mobile) to suppress the long-press context menu so it can never
@@ -2216,8 +2602,14 @@ const HideDoneCtx = React.createContext<boolean>(false)
 function TaskList({ tasks, showProject = true, empty = 'No tasks', emptyDesc, emptyAction, hideChildren = true, hideDoneChildren = false }: { tasks: Task[]; showProject?: boolean; empty?: string; emptyDesc?: string; emptyAction?: React.ReactNode; hideChildren?: boolean; hideDoneChildren?: boolean }) {
   const reorder = useData(s => s.reorder)
   const setParent = useData(s => s.setParent)
+  const bulkSetParent = useData(s => s.bulkSetParent)
+  const bulkReorder = useData(s => s.bulkReorder)
   const updateTask = useData(s => s.updateTask)
   const allTasks = useData(s => s.tasks)
+  // Multi-select drag: when the row the user starts dragging is part of a
+  // multi-task selection, the WHOLE selection moves together. Captured at
+  // drag start so mid-drag selection changes can't corrupt the operation.
+  const dragGroupRef = useRef<string[] | null>(null)
   // Same floating drag preview is used on BOTH mobile and desktop for a
   // consistent, unified drag experience across form factors. See
   // <DragOverlay> below and .task-drag-preview in index.css.
@@ -2251,10 +2643,20 @@ function TaskList({ tasks, showProject = true, empty = 'No tasks', emptyDesc, em
   const visible = hideChildren ? tasks.filter(t => !t.parentId || !rootIds.has(t.parentId)) : tasks
   const allIds = useMemo(() => collectVisibleIds(visible, allTasks), [visible, allTasks])
 
+  // Publish the ids this list is currently previewing so the global Ctrl/Cmd+A
+  // shortcut can "select all previewed tasks". Cleared on unmount.
+  const listKey = React.useId()
+  useEffect(() => {
+    setVisibleTaskIds(listKey, allIds)
+    return () => clearVisibleTaskIds(listKey)
+  }, [listKey, allIds])
+
   // ---- Drop indicator state shared with every TaskRow via context ----
   const [activeId, setActiveId] = useState<string | null>(null)
   const [indicator, setIndicator] = useState<DropIndicator>(null)
-  const ctxValue = useMemo(() => ({ indicator, activeId }), [indicator, activeId])
+  // Reactive copy of the captured drag group so TaskRows can dim their members.
+  const [dragGroup, setDragGroup] = useState<Set<string> | null>(null)
+  const ctxValue = useMemo(() => ({ indicator, activeId, dragGroup }), [indicator, activeId, dragGroup])
 
   // While a drag is in progress, swallow the native contextmenu and
   // selectstart events on the whole document. This prevents mobile Safari /
@@ -2291,8 +2693,22 @@ function TaskList({ tasks, showProject = true, empty = 'No tasks', emptyDesc, em
   }
 
   const handleDragStart = (e: DragStartEvent) => {
-    setActiveId(String(e.active.id))
+    const activeId = String(e.active.id)
+    setActiveId(activeId)
     setIndicator(null)
+    // If the dragged row belongs to a multi-selection (2+ tasks), capture the
+    // full selected set so the whole group moves together on drop. When the
+    // dragged row is NOT part of the selection, we fall back to a single-task
+    // drag (existing behavior) and leave the selection untouched.
+    const sel = useSelection.getState()
+    if (sel.active && sel.ids.size > 1 && sel.ids.has(activeId)) {
+      const grp = Array.from(sel.ids)
+      dragGroupRef.current = grp
+      setDragGroup(new Set(grp))
+    } else {
+      dragGroupRef.current = null
+      setDragGroup(null)
+    }
     // Publish drag-active to the global tracker so every open context menu
     // / popover unmounts instantly and refuses to reopen until drag ends.
     dragActiveStore.set(true)
@@ -2335,17 +2751,33 @@ function TaskList({ tasks, showProject = true, empty = 'No tasks', emptyDesc, em
     setActiveId(null)
     setIndicator(null)
     dragActiveStore.set(false)
+    dragGroupRef.current = null
+    setDragGroup(null)
     if (typeof document !== 'undefined') document.body.classList.remove('is-dnd-dragging')
   }
 
   /** Execute the resolved drop (reparent / reorder). Extracted so both the
    *  direct path and the post-confirmation path share exactly one code path,
    *  which keeps status propagation and ordering rules in a single place. */
-  const performDrop = (activeId: string, targetId: string, mode: DropMode) => {
+  const performDrop = (activeId: string, targetId: string, mode: DropMode, group?: string[] | null) => {
     const byId = new Map(useData.getState().tasks.map(t => [t.id, t]))
     const activeTask = byId.get(activeId)
     const overTask = byId.get(targetId)
     if (!activeTask || !overTask) return
+
+    // ---- Multi-select group drop ----
+    // When a group drag was captured at drag start, move the ENTIRE selection
+    // together. The dropped-on target must not be one of the group members
+    // (guarded here and again in the store) — otherwise fall through to the
+    // single-task path for safety.
+    if (group && group.length > 1 && group.includes(activeId) && !group.includes(targetId)) {
+      if (mode === 'inside') {
+        useData.getState().bulkSetParent(group, targetId)
+      } else {
+        useData.getState().bulkReorder(group, targetId, mode === 'below')
+      }
+      return
+    }
 
     if (mode === 'inside') {
       if (activeTask.parentId === targetId) return
@@ -2376,8 +2808,12 @@ function TaskList({ tasks, showProject = true, empty = 'No tasks', emptyDesc, em
     const ind = indicator
     const active = e.active
     const over = e.over
+    // Snapshot & clear the captured group so it never leaks into a later drag.
+    const capturedGroup = dragGroupRef.current
+    dragGroupRef.current = null
     setActiveId(null)
     setIndicator(null)
+    setDragGroup(null)
     dragActiveStore.set(false)
     if (typeof document !== 'undefined') document.body.classList.remove('is-dnd-dragging')
     if (!over || active.id === over.id) return
@@ -2392,16 +2828,31 @@ function TaskList({ tasks, showProject = true, empty = 'No tasks', emptyDesc, em
     const overTask = byId.get(targetId)
     if (!overTask) return
 
-    // Don't allow dropping onto self or a descendant (cycle guard).
+    // The group being dragged (if any). Used for cycle guards and to decide
+    // whether to route the drop through the bulk (group) code path.
+    const group = capturedGroup
+    const groupSet = group && group.length > 1 && group.includes(activeId) ? new Set(group) : null
+
+    // Don't allow dropping onto self or a descendant (cycle guard). For a group
+    // drag, also reject if the target is ANY selected member or a descendant of
+    // one — you can't drop a group into itself.
     let cur: string | undefined = targetId
     while (cur) {
       if (cur === activeId) return
+      if (groupSet && groupSet.has(cur)) return
       cur = byId.get(cur)?.parentId
     }
 
     // Mode = whatever the live indicator showed at drop time; default to
     // 'inside' for backwards compat with the dedicated nest droppable.
     const mode: DropMode = ind && ind.targetId === targetId ? ind.mode : (overIdRaw.startsWith('nest:') ? 'inside' : 'inside')
+
+    // Group drags skip the single-task Done confirmation and move the whole
+    // selection at once (bulkSetParent handles status propagation upward).
+    if (groupSet) {
+      performDrop(activeId, targetId, mode, group)
+      return
+    }
 
     /* ---- Done → non-Done confirmation ---------------------------------
        If the dragged task is Done and the drop would place it into a
@@ -2469,7 +2920,12 @@ function TaskList({ tasks, showProject = true, empty = 'No tasks', emptyDesc, em
         <DragOverlay dropAnimation={null} zIndex={9999}>
           {activeId ? (() => {
             const t = allTasks.find(x => x.id === activeId)
-            return t ? <TaskDragPreview task={t} /> : null
+            if (!t) return null
+            // When dragging a multi-selection, show a stacked preview with a
+            // count badge so it's clear the whole group is moving.
+            const grp = dragGroupRef.current
+            const groupCount = grp && grp.length > 1 && grp.includes(activeId) ? grp.length : 0
+            return <TaskDragPreview task={t} groupCount={groupCount} />
           })() : null}
         </DragOverlay>
       </DndContext>
@@ -4487,13 +4943,20 @@ function BulkActionBar() {
           onConfirm={() => { bulkDelete(idList); setConfirmDelete(false); exit() }}
         />
       )}
-      <div className='bulk-action-bar'>
-        <div className='flex items-center gap-2'>
-          <span className='inline-flex items-center justify-center h-6 min-w-6 px-1.5 rounded-full bg-indigo-500 text-white text-xs font-semibold'>{count}</span>
-          <span className='text-sm font-medium hidden sm:inline'>selected</span>
+      <div className='bulk-action-bar' role='toolbar' aria-label='Bulk actions for selected tasks'>
+        {/* Header: selection count + exit. On mobile this stays pinned as its
+            own row so the count and Done button never scroll out of view. */}
+        <div className='bulk-action-head'>
+          <div className='flex items-center gap-2 min-w-0'>
+            <span className='inline-flex items-center justify-center h-6 min-w-6 px-1.5 rounded-full bg-indigo-500 text-white text-xs font-semibold shrink-0'>{count}</span>
+            <span className='text-sm font-medium'>selected</span>
+          </div>
+          <div className='bulk-action-head-divider h-5 w-px bg-[hsl(var(--border))] mx-1' />
+          <button className='btn btn-ghost !h-8 shrink-0' onClick={exit} aria-label='Exit selection'><X className='h-4 w-4' />Done</button>
         </div>
-        <div className='h-5 w-px bg-[hsl(var(--border))] mx-1' />
-        <div className='flex items-center gap-1 flex-wrap'>
+        {/* Actions strip: horizontally scrollable on small screens so every
+            action is always reachable without clipping/overflow. */}
+        <div className='bulk-action-actions'>
           <button className='btn btn-ghost !h-8' disabled={!count} onClick={() => setEditing(true)}><Pencil className='h-3.5 w-3.5' />Edit</button>
           <button className='btn btn-ghost !h-8' disabled={!count} onClick={(e) => openMenu(e, statusItems)}><CheckCircle2 className='h-3.5 w-3.5' />Status</button>
           <button className='btn btn-ghost !h-8' disabled={!count} onClick={(e) => openMenu(e, priorityItems)}><AlertCircle className='h-3.5 w-3.5' />Priority</button>
@@ -4503,8 +4966,6 @@ function BulkActionBar() {
           <button className='btn btn-ghost !h-8' disabled={!count} onClick={() => bulkArchive(idList, !allArchived)}><Archive className='h-3.5 w-3.5' />{allArchived ? 'Unarchive' : 'Archive'}</button>
           <button className='btn btn-ghost !h-8 text-rose-600' disabled={!count} onClick={() => setConfirmDelete(true)}><Trash2 className='h-3.5 w-3.5' />Delete</button>
         </div>
-        <div className='h-5 w-px bg-[hsl(var(--border))] mx-1' />
-        <button className='btn btn-ghost !h-8' onClick={exit} aria-label='Exit selection'><X className='h-4 w-4' />Done</button>
       </div>
     </>,
     document.body,
@@ -4846,10 +5307,26 @@ function KanbanTaskCard({ task, onDragStart, onDragEnd }: { task: Task; onDragSt
       </div>
       {!!task.images?.length && (
         <div className='compact-hide mt-2 flex items-center gap-2 overflow-x-auto pb-1'>
-          {task.images.slice(0, 2).map(img => (
-            <img key={img.id} src={img.url} alt={img.name || task.title} className='h-14 w-14 rounded-xl object-cover border border-black/5 dark:border-white/10 shrink-0' />
+          {task.images.slice(0, 2).map((img, i) => (
+            <button
+              key={img.id}
+              type='button'
+              className='task-image-thumb shrink-0'
+              onPointerDown={e => e.stopPropagation()}
+              onClick={e => { e.stopPropagation(); openLightbox(task.images!, i) }}
+              aria-label={`Preview image ${img.name || i + 1}`}
+            >
+              <img src={img.url} alt={img.name || task.title} className='h-14 w-14 rounded-xl object-cover border border-black/5 dark:border-white/10' />
+            </button>
           ))}
-          {task.images.length > 2 && <span className='text-[11px] text-zinc-500'>+{task.images.length - 2} images</span>}
+          {task.images.length > 2 && (
+            <button
+              type='button'
+              className='text-[11px] text-zinc-500 hover:text-indigo-600 shrink-0'
+              onPointerDown={e => e.stopPropagation()}
+              onClick={e => { e.stopPropagation(); openLightbox(task.images!, 2) }}
+            >+{task.images.length - 2} images</button>
+          )}
         </div>
       )}
       <div className='compact-row-meta mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-zinc-500'>
@@ -7079,12 +7556,20 @@ function TaskDetails() {
           </div>
           <div className='space-y-3'>
             <div className='flex flex-wrap gap-3'>
-              {(task.images || []).map(img => (
+              {(task.images || []).map((img, i) => (
                 <div key={img.id} className='panel p-2 w-[140px]'>
-                  <img src={img.url} alt={img.name || task.title} className='h-24 w-full rounded-xl object-cover' />
+                  <button
+                    type='button'
+                    className='task-image-thumb w-full block relative group/thumb'
+                    onClick={() => openLightbox(task.images || [], i)}
+                    aria-label={`Preview ${img.name || 'task image'}`}
+                  >
+                    <img src={img.url} alt={img.name || task.title} className='h-24 w-full rounded-xl object-cover' />
+                    <span className='task-image-thumb-zoom'><ZoomIn className='h-4 w-4' /></span>
+                  </button>
                   <div className='mt-2 text-[11px] text-zinc-500 truncate'>{img.name || 'Task image'}</div>
                   <div className='mt-2 flex items-center gap-1'>
-                    <button className='btn btn-secondary !h-8 !px-2 text-xs' onClick={() => window.open(img.url, '_blank')}>Open</button>
+                    <button className='btn btn-secondary !h-8 !px-2 text-xs' onClick={() => openLightbox(task.images || [], i)}>Preview</button>
                     <button className='btn btn-ghost !h-8 !px-2 text-xs text-rose-600' onClick={() => data.updateTask(task.id, { images: (task.images || []).filter(x => x.id !== img.id) })}>Remove</button>
                   </div>
                 </div>
@@ -7173,6 +7658,22 @@ function Layout() {
         if (!sel) return
         e.preventDefault()
         useData.getState().duplicateTask(sel)
+        return
+      }
+
+      // Ctrl/Cmd+A → select ALL previewed tasks of the current view (enter
+      // multi-select mode). Ignored while a modal/palette is open so it can't
+      // hijack a native "select all" the user meant for a dialog.
+      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'a') {
+        const ui = useUI.getState()
+        if (ui.command || ui.quick || ui.filters) return
+        const ids = getAllVisibleTaskIds()
+        if (ids.length === 0) return
+        e.preventDefault()
+        const sel = useSelection.getState()
+        sel.setMany(ids)
+        // Anchor at the last id so a subsequent shift-click extends sensibly.
+        sel.setAnchor(ids[ids.length - 1])
         return
       }
 
@@ -7353,6 +7854,7 @@ function Layout() {
       <FiltersPanel />
       <QuickSettingsPopup />
       <BulkActionBar />
+      <ImageLightbox />
 
       {/* Keyboard-shortcut delete confirmation (Delete / Backspace on a
           selected task, or on the currently-viewed project). Reuses the
