@@ -88,3 +88,26 @@ export async function loadSettings(): Promise<UserSettings | null> {
   if (!data) return null
   return rowToSettings(data as SettingsRow)
 }
+
+/**
+ * Atomically claim the one-time first-run seed for the current user.
+ *
+ * Returns `true` to EXACTLY ONE caller — the first one to flip the account's
+ * `profiles.seeded_at` from NULL to now() (see migration 0002). Every later
+ * call (a React Query refetch, a StrictMode double-effect, another tab, or
+ * another device) returns `false`, so the client seeds demo content at most
+ * once per account and can never duplicate an existing user's data.
+ *
+ * If the RPC is unavailable (e.g. the migration hasn't been applied yet), we
+ * fall back to `false` — meaning "do NOT seed". Refusing to seed on error is
+ * the safe default: it can never create duplicates, at worst a brand-new
+ * account starts empty until the migration lands.
+ */
+export async function claimInitialSeed(): Promise<boolean> {
+  const { data, error } = await supabase.rpc('claim_initial_seed')
+  if (error) {
+    console.error('[seed] claim_initial_seed RPC failed', error)
+    return false
+  }
+  return data === true
+}
