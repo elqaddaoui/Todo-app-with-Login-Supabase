@@ -1916,6 +1916,46 @@ body.is-dnd-dragging *{
 .dark .task-drag-preview{
   box-shadow: 0 26px 54px -12px rgba(0,0,0,.7), 0 0 0 1px hsl(var(--focus) / .5);
 }
+/* Group (multi-select) drag preview — a "stacked cards" look behind the top
+   row plus a count badge so it reads clearly as moving multiple tasks. */
+.task-drag-preview-group{ position: relative; }
+.task-drag-preview-group::before,
+.task-drag-preview-group::after{
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: hsl(var(--card));
+  border: 1px solid hsl(var(--border));
+  z-index: -1;
+}
+.task-drag-preview-group::before{ transform: translate(6px, 6px); opacity: .55; }
+.task-drag-preview-group::after{ transform: translate(12px, 12px); opacity: .3; }
+/* Non-active members of a group drag: dimmed + slightly scaled so the user
+   sees they are travelling with the dragged row. */
+.task-row.task-row-drag-group{
+  opacity: .4;
+  transform: scale(.985);
+  transition: opacity .12s ease, transform .12s ease;
+}
+.task-drag-count{
+  position: absolute;
+  top: -8px;
+  left: -8px;
+  min-width: 22px;
+  height: 22px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: hsl(238 84% 60%);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 2px 6px rgba(0,0,0,.25);
+  z-index: 1;
+}
 
 /* ============================================================
    Mobile drag lock hardening — while a task drag is in progress on a touch
@@ -3521,7 +3561,10 @@ body.is-dnd-dragging *{
   background: hsl(238 84% 60% / 0.12);
 }
 
-/* Bottom-centered floating action bar shown in selection mode. */
+/* Bottom-centered floating action bar shown in selection mode.
+   Desktop: a single horizontal row (head + actions inline).
+   Mobile:  a full-width, centered card with a pinned header row and a
+            horizontally-scrollable actions strip so nothing clips/overflows. */
 .bulk-action-bar{
   position: fixed;
   left: 50%;
@@ -3538,17 +3581,78 @@ body.is-dnd-dragging *{
   background: hsl(var(--card));
   color: hsl(var(--card-foreground));
   box-shadow: 0 12px 40px rgba(0,0,0,0.18), 0 2px 8px rgba(0,0,0,0.10);
-  overflow-x: auto;
-  scrollbar-width: none;
   animation: bulkBarIn 0.18s ease-out;
 }
-.bulk-action-bar::-webkit-scrollbar{ display: none; }
+.bulk-action-head{
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.bulk-action-actions{
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.bulk-action-actions::-webkit-scrollbar{ display: none; }
+.bulk-action-actions > .btn{ flex-shrink: 0; }
+/* Desktop divider between the head and the actions. */
+.bulk-action-head::after{
+  content: '';
+  width: 1px;
+  align-self: stretch;
+  margin: 2px 2px 2px 6px;
+  background: hsl(var(--border));
+}
 @keyframes bulkBarIn{
   from{ opacity: 0; transform: translate(-50%, 12px); }
   to{ opacity: 1; transform: translate(-50%, 0); }
 }
+
+/* ---- Mobile / narrow viewports: stack head over a scrollable actions row.
+   The bar spans the viewport (with safe insets) and is centered; the actions
+   strip scrolls horizontally with momentum + snap so every action is reachable
+   with a thumb and none are ever cut off. ---- */
 @media (max-width: 640px){
-  .bulk-action-bar{ bottom: 12px; padding: 6px 8px; }
+  .bulk-action-bar{
+    left: 8px;
+    right: 8px;
+    bottom: calc(10px + env(safe-area-inset-bottom, 0px));
+    transform: none;
+    max-width: none;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+    padding: 10px;
+    border-radius: 18px;
+  }
+  .bulk-action-head{
+    justify-content: space-between;
+  }
+  /* The stretched vertical divider makes no sense in the stacked layout. */
+  .bulk-action-head::after{ display: none; }
+  .bulk-action-head-divider{ display: none; }
+  .bulk-action-actions{
+    gap: 6px;
+    padding-bottom: 2px;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior-x: contain;
+    scroll-snap-type: x proximity;
+  }
+  .bulk-action-actions > .btn{
+    /* Bigger, touch-friendly targets on mobile. */
+    height: 40px !important;
+    padding-left: 12px;
+    padding-right: 12px;
+    scroll-snap-align: start;
+  }
+  @keyframes bulkBarIn{
+    from{ opacity: 0; transform: translateY(12px); }
+    to{ opacity: 1; transform: translateY(0); }
+  }
 }
 
 /* Selected calendar event chip: a clear ring so the selection reads at a
@@ -3557,4 +3661,179 @@ body.is-dnd-dragging *{
   outline: 2px solid hsl(238 84% 60% / 0.9);
   outline-offset: 1px;
   border-radius: 6px;
+}
+
+/* ============================================================
+   Image lightbox / preview popup
+   ============================================================ */
+.task-image-thumb{
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: zoom-in;
+  border-radius: 12px;
+  line-height: 0;
+  transition: transform .12s ease, opacity .12s ease;
+}
+.task-image-thumb:hover{ transform: scale(1.03); }
+.task-image-thumb:focus-visible{ outline: 2px solid hsl(var(--focus)); outline-offset: 2px; }
+.task-image-thumb-zoom{
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 24px;
+  width: 24px;
+  border-radius: 8px;
+  background: rgba(0,0,0,.55);
+  color: #fff;
+  opacity: 0;
+  transition: opacity .12s ease;
+}
+.group\/thumb:hover .task-image-thumb-zoom{ opacity: 1; }
+
+.lightbox-overlay{
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: rgba(9, 9, 11, .92);
+  backdrop-filter: blur(4px);
+  animation: lightboxIn .16s ease-out;
+  -webkit-user-select: none;
+  user-select: none;
+}
+@keyframes lightboxIn{ from{ opacity: 0 } to{ opacity: 1 } }
+
+.lightbox-toolbar{
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  color: #fff;
+  background: linear-gradient(to bottom, rgba(0,0,0,.55), transparent);
+  z-index: 2;
+}
+.lightbox-title{
+  font-size: 13px;
+  font-weight: 600;
+  color: #fff;
+  max-width: 55vw;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.lightbox-counter{ color: rgba(255,255,255,.7); font-weight: 500; }
+.lightbox-tools{ display: flex; align-items: center; gap: 4px; }
+.lightbox-zoom{
+  min-width: 46px;
+  text-align: center;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: rgba(255,255,255,.85);
+}
+.lightbox-btn{
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 40px;
+  width: 40px;
+  border-radius: 10px;
+  color: #fff;
+  background: rgba(255,255,255,.08);
+  transition: background .12s ease, opacity .12s ease;
+}
+.lightbox-btn:hover{ background: rgba(255,255,255,.18); }
+.lightbox-btn:disabled{ opacity: .35; cursor: default; }
+.lightbox-btn:focus-visible{ outline: 2px solid #fff; outline-offset: 2px; }
+
+.lightbox-stage{
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 64px 16px 96px;
+  overflow: hidden;
+}
+.lightbox-image{
+  max-width: min(94vw, 1400px);
+  max-height: 80vh;
+  object-fit: contain;
+  border-radius: 8px;
+  box-shadow: 0 20px 60px rgba(0,0,0,.5);
+  touch-action: none;
+  will-change: transform;
+  transition: transform .05s linear;
+}
+
+.lightbox-nav{
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 48px;
+  width: 48px;
+  border-radius: 999px;
+  color: #fff;
+  background: rgba(255,255,255,.1);
+  transition: background .12s ease;
+}
+.lightbox-nav:hover{ background: rgba(255,255,255,.22); }
+.lightbox-nav:focus-visible{ outline: 2px solid #fff; outline-offset: 2px; }
+.lightbox-nav-prev{ left: 14px; }
+.lightbox-nav-next{ right: 14px; }
+
+.lightbox-thumbs{
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 12px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  background: linear-gradient(to top, rgba(0,0,0,.55), transparent);
+}
+.lightbox-thumbs::-webkit-scrollbar{ display: none; }
+.lightbox-thumb{
+  flex-shrink: 0;
+  height: 52px;
+  width: 52px;
+  border-radius: 8px;
+  overflow: hidden;
+  opacity: .55;
+  border: 2px solid transparent;
+  transition: opacity .12s ease, border-color .12s ease;
+  line-height: 0;
+}
+.lightbox-thumb img{ height: 100%; width: 100%; object-fit: cover; }
+.lightbox-thumb:hover{ opacity: .85; }
+.lightbox-thumb.is-active{ opacity: 1; border-color: #fff; }
+
+@media (max-width: 640px){
+  .lightbox-title{ max-width: 40vw; }
+  .lightbox-btn{ height: 38px; width: 38px; }
+  .lightbox-nav{ height: 40px; width: 40px; }
+  .lightbox-nav-prev{ left: 8px; }
+  .lightbox-nav-next{ right: 8px; }
+  .lightbox-stage{ padding: 60px 8px 92px; }
+  .lightbox-image{ max-height: 72vh; }
 }
