@@ -4,9 +4,16 @@ This directory contains the **complete PostgreSQL schema** that migrates the
 Orbit app's data layer from browser-only storage (Zustand + `localStorage`) to
 Supabase.
 
-- `migrations/0001_initial_schema.sql` — the full, idempotent migration.
+- `migrations/0001_initial_schema.sql` — the full, idempotent schema. Its
+  `handle_new_user()` trigger provisions the minimum per-user records
+  (profile + default `user_settings`) on signup.
+- `migrations/0002_seed_claim.sql` — **retired.** Previously added a one-time
+  demo-content seed claim; kept only for migration-history continuity.
+- `migrations/0003_remove_seed.sql` — removes the demo-seeding mechanism
+  entirely (drops `claim_initial_seed()` and `profiles.seeded_at`). New
+  accounts now start with a completely empty workspace.
 
-Apply it with either:
+Apply them in order with either:
 
 ```bash
 # Supabase CLI (recommended)
@@ -218,9 +225,12 @@ synchronous, optimistic API and all logic (status propagation, undo/redo,
 reordering). A store **subscriber** computes the minimal diff between the
 previous and next `{tasks, projects, tags}` snapshots and pushes just those
 inserts/updates/deletes to Supabase — so the UI, UX and performance are
-unchanged, and undo/redo restores persist too. First-time users are seeded
-with the demo dataset (re-keyed with fresh UUIDs). `useUI` preferences sync to
-`user_settings` and follow the user across devices.
+unchanged, and undo/redo restores persist too. Brand-new accounts start with a
+**completely empty workspace** — no demo/sample tasks, projects or tags are
+ever seeded. The only per-user records provisioned are the profile +
+`user_settings` rows, created server-side by the `handle_new_user()` signup
+trigger. `useUI` preferences sync to `user_settings` and follow the user across
+devices.
 
 ### Applying the schema (one-time, requires project owner)
 

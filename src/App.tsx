@@ -10,7 +10,7 @@ import {
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import { newId } from './data/id'
-import { loadBootstrap, loadSettings, claimInitialSeed } from './data/load'
+import { loadBootstrap, loadSettings } from './data/load'
 import { diffAndPersist, setSyncErrorHandler, flushSync, type Snapshot } from './data/sync'
 import { persistSettings, setSettingsUserId } from './data/settings'
 import type { UserSettings } from './data/types'
@@ -115,34 +115,12 @@ const todayStr = format(new Date(), 'yyyy-MM-dd')
 const d = (n: number) => format(addDays(new Date(), n), 'yyyy-MM-dd')
 const nowIso = () => new Date().toISOString()
 
-const boot: Bootstrap = {
-  tags: [
-    { id: 'design', name: 'design', color: '#8b5cf6' },
-    { id: 'frontend', name: 'frontend', color: '#0ea5e9' },
-    { id: 'bug', name: 'bug', color: '#ef4444' },
-    { id: 'meeting', name: 'meeting', color: '#6366f1' },
-    { id: 'review', name: 'review', color: '#ec4899' },
-  ],
-  projects: [
-    { id: 'orbit', name: 'Orbit Redesign', icon: 'Rocket', color: '#6366f1', favorite: true, description: 'Q3 product refresh', documentation: '# Orbit Redesign\n\n## Goals\n- Calm\n- Fast\n- Readable\n\n## Notes\n- [x] Dashboard IA\n- [ ] Calendar interactions\n- [ ] Mobile polish\n\n> The app should feel like a calm command center.', order: 0 },
-    { id: 'mobile', name: 'Mobile App', icon: 'Target', color: '#0ea5e9', parentId: 'orbit', documentation: '# Mobile\n\nNative shell and offline polish.', order: 1 },
-    { id: 'learning', name: 'Learning', icon: 'BookOpen', color: '#f59e0b', documentation: '# Learning\n\nBooks, courses, experiments.', order: 2 },
-    { id: 'personal', name: 'Personal', icon: 'Heart', color: '#f43f5e', favorite: true, documentation: '# Personal\n\nLife admin and side quests.', order: 3 },
-  ],
-  tasks: [
-    { id: '1', title: 'Design new dashboard layout', description: 'Explore Linear and Vercel density patterns.', status: 'in_progress', priority: 'high', category: 'work', projectId: 'orbit', tags: ['design', 'frontend'], dueDate: todayStr, time: '14:00', estimatedMinutes: 120, favorite: true, checklist: [{ id: 'c1', text: 'Wireframes', done: true }, { id: 'c2', text: 'Spacing system', done: false }], comments: [{ id: 'cm1', author: 'Alex', text: 'Try a denser variant.', createdAt: nowIso() }], attachments: [{ id: 'a1', name: 'moodboard.fig', size: 324000 }], activity: [{ id: 'ac1', type: 'created', message: 'Task created', createdAt: nowIso(), by: 'You' }], createdAt: nowIso(), updatedAt: nowIso(), order: 0 },
-    { id: '2', title: 'Weekly standup', status: 'planned', priority: 'medium', category: 'work', projectId: 'orbit', tags: ['meeting'], dueDate: todayStr, time: '10:00', estimatedMinutes: 30, favorite: false, checklist: [], comments: [], attachments: [], activity: [{ id: 'ac2', type: 'created', message: 'Task created', createdAt: nowIso(), by: 'You' }], createdAt: nowIso(), updatedAt: nowIso(), order: 1 },
-    { id: '3', title: 'Review PR #482', status: 'not_started', priority: 'urgent', category: 'work', projectId: 'orbit', tags: ['review', 'frontend'], dueDate: todayStr, time: '16:30', estimatedMinutes: 45, favorite: true, checklist: [], comments: [], attachments: [], activity: [{ id: 'ac3', type: 'created', message: 'Task created', createdAt: nowIso(), by: 'You' }], createdAt: nowIso(), updatedAt: nowIso(), order: 2 },
-    { id: '4', title: 'Refactor task store', status: 'in_progress', priority: 'medium', category: 'work', projectId: 'orbit', tags: ['frontend'], dueDate: d(1), estimatedMinutes: 180, favorite: false, checklist: [], comments: [], attachments: [], activity: [{ id: 'ac4', type: 'created', message: 'Task created', createdAt: nowIso(), by: 'You' }], createdAt: nowIso(), updatedAt: nowIso(), order: 3 },
-    { id: '5', title: 'Fix calendar overflow bug', status: 'blocked', priority: 'high', category: 'work', projectId: 'orbit', tags: ['bug'], dueDate: d(-1), estimatedMinutes: 60, favorite: false, checklist: [], comments: [], attachments: [], activity: [{ id: 'ac5', type: 'created', message: 'Task created', createdAt: nowIso(), by: 'You' }], createdAt: nowIso(), updatedAt: nowIso(), order: 4 },
-    { id: '6', title: 'Build mobile shell prototype', status: 'in_progress', priority: 'high', category: 'work', projectId: 'mobile', tags: ['frontend'], dueDate: d(4), estimatedMinutes: 480, favorite: false, checklist: [{ id: 'm1', text: 'Choose framework', done: true }, { id: 'm2', text: 'Offline cache', done: false }], comments: [], attachments: [], activity: [{ id: 'ac6', type: 'created', message: 'Task created', createdAt: nowIso(), by: 'You' }], createdAt: nowIso(), updatedAt: nowIso(), order: 5 },
-    { id: '7', title: 'Navigation spec', status: 'planned', priority: 'medium', category: 'work', projectId: 'mobile', parentId: '6', tags: ['frontend'], dueDate: d(2), estimatedMinutes: 60, favorite: false, checklist: [], comments: [], attachments: [], activity: [{ id: 'ac7', type: 'created', message: 'Task created', createdAt: nowIso(), by: 'You' }], createdAt: nowIso(), updatedAt: nowIso(), order: 6 },
-    { id: '8', title: 'Read A Philosophy of Software Design', status: 'in_progress', priority: 'low', category: 'learning', projectId: 'learning', tags: [], dueDate: d(5), estimatedMinutes: 240, favorite: false, checklist: [], comments: [], attachments: [], activity: [{ id: 'ac8', type: 'created', message: 'Task created', createdAt: nowIso(), by: 'You' }], createdAt: nowIso(), updatedAt: nowIso(), order: 7 },
-    { id: '9', title: 'Buy groceries', status: 'not_started', priority: 'low', category: 'errands', projectId: 'personal', tags: [], dueDate: todayStr, time: '18:00', estimatedMinutes: 45, favorite: false, checklist: [{ id: 'g1', text: 'Oat milk', done: false }, { id: 'g2', text: 'Olive oil', done: false }], comments: [], attachments: [], activity: [{ id: 'ac9', type: 'created', message: 'Task created', createdAt: nowIso(), by: 'You' }], createdAt: nowIso(), updatedAt: nowIso(), order: 8 },
-    { id: '10', title: 'Coffee with Maya', status: 'planned', priority: 'low', category: 'social', projectId: 'personal', tags: [], dueDate: d(1), time: '15:30', estimatedMinutes: 60, favorite: false, checklist: [], comments: [], attachments: [], activity: [{ id: 'ac10', type: 'created', message: 'Task created', createdAt: nowIso(), by: 'You' }], createdAt: nowIso(), updatedAt: nowIso(), order: 9 },
-    { id: '11', title: 'Run 5K', status: 'done', priority: 'low', category: 'health', projectId: 'personal', tags: [], dueDate: d(-1), estimatedMinutes: 40, completedAt: nowIso(), favorite: false, checklist: [], comments: [], attachments: [], activity: [{ id: 'ac11', type: 'completed', message: 'Task completed', createdAt: nowIso(), by: 'You' }], createdAt: nowIso(), updatedAt: nowIso(), order: 10 },
-  ],
-}
+/* Brand-new accounts start with a COMPLETELY EMPTY workspace. We never seed
+   demo/sample tasks, projects or tags into a user's Supabase data. The only
+   per-user records that get provisioned are the profile + settings rows, and
+   those are created server-side by the `handle_new_user()` signup trigger (see
+   supabase/migrations/0001). All application data (tasks, projects, tags,
+   comments, checklist items, etc.) stays empty until the user creates it. */
 
 const localizer = dateFnsLocalizer({ format, parse, startOfWeek: (dt: Date) => startOfWeek(dt, { weekStartsOn: 1 }), getDay, locales: { 'en-US': enUS } })
 const DragAndDropCalendar = withDragAndDrop(BigCalendar as any) as any
@@ -802,50 +780,18 @@ useData.subscribe((state) => {
 /* ============================================================
    Helpers
    ============================================================ */
-/* Re-key the demo `boot` dataset with fresh UUIDs so a brand-new user's
-   first-run content is valid for the UUID columns AND unique per account.
-   All internal references (projectId, parentId, task.tags -> tag ids, and
-   nested child-item ids) are remapped consistently. */
-function seedForNewUser(src: Bootstrap): Bootstrap {
-  const projectIdMap = new Map<string, string>()
-  const tagIdMap = new Map<string, string>()
-  const taskIdMap = new Map<string, string>()
-  src.projects.forEach(p => projectIdMap.set(p.id, newId()))
-  src.tags.forEach(t => tagIdMap.set(t.id, newId()))
-  src.tasks.forEach(t => taskIdMap.set(t.id, newId()))
-
-  const projects: Project[] = src.projects.map(p => ({
-    ...p,
-    id: projectIdMap.get(p.id)!,
-    parentId: p.parentId ? projectIdMap.get(p.parentId) : undefined,
-  }))
-  const tags: Tag[] = src.tags.map(t => ({ ...t, id: tagIdMap.get(t.id)! }))
-  const tasks: Task[] = src.tasks.map(t => ({
-    ...t,
-    id: taskIdMap.get(t.id)!,
-    projectId: t.projectId ? projectIdMap.get(t.projectId) : undefined,
-    parentId: t.parentId ? taskIdMap.get(t.parentId) : undefined,
-    tags: t.tags.map(tg => tagIdMap.get(tg) ?? tg).filter(Boolean),
-    checklist: t.checklist.map(c => ({ ...c, id: newId() })),
-    comments: t.comments.map(c => ({ ...c, id: newId() })),
-    images: (t.images ?? []).map(im => ({ ...im, id: newId() })),
-    attachments: t.attachments.map(a => ({ ...a, id: newId() })),
-    activity: t.activity.map(a => ({ ...a, id: newId() })),
-  }))
-  return { tasks, projects, tags }
-}
 
 /**
  * Load the authenticated user's dataset from Supabase and hydrate the store.
  *
- * Data-initialization contract (no duplicates, ever):
- *   • EXISTING users always load ONLY their own Supabase rows — we never seed,
- *     recreate or duplicate anything for them.
- *   • BRAND-NEW accounts are seeded with the demo content exactly ONCE, guarded
- *     by an atomic server-side claim (`claimInitialSeed` → migration 0002).
- *     Only the single caller that wins the claim performs the seed; a refetch,
- *     a StrictMode double-effect, a second tab or another device all lose the
- *     claim and therefore never re-seed.
+ * Data-initialization contract (no demo data, ever):
+ *   • Every user — brand-new or returning — loads ONLY their own Supabase rows.
+ *   • We NEVER seed, insert or recreate any demo/sample tasks, projects, tags,
+ *     comments, checklist items, etc. A brand-new account simply returns an
+ *     empty dataset and starts with a completely empty workspace; application
+ *     data only appears once the user creates it.
+ *   • The minimum per-user records (profile + settings) are provisioned
+ *     server-side by the `handle_new_user()` signup trigger, not here.
  *
  * Once hydrated, the Supabase sync bridge is armed with the loaded data as its
  * baseline so subsequent local edits diff against the correct starting point.
@@ -859,37 +805,15 @@ function useBootstrap() {
     queryKey: ['bootstrap', userId],
     enabled: !!userId,
     // Never auto-refetch the bootstrap: it's a one-shot load for the session.
-    // Belt-and-suspenders on top of the server-side seed claim so we don't even
-    // attempt a redundant load that could momentarily observe an empty account.
     staleTime: Infinity,
     gcTime: Infinity,
     refetchOnMount: false,
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
     retry: false,
-    queryFn: async (): Promise<Bootstrap> => {
-      const loaded = await loadBootstrap()
-      const isEmpty =
-        loaded.tasks.length === 0 && loaded.projects.length === 0 && loaded.tags.length === 0
-      // Existing user (has data) → always return exactly their own rows.
-      if (!isEmpty) return loaded
-
-      // Empty account: attempt to atomically claim the one-time seed. Only the
-      // very first caller for this account ever wins; everyone else gets false
-      // and returns the empty dataset (their real, already-seeded rows will be
-      // read on the next natural load). This makes seeding idempotent and
-      // duplicate-proof across refetches, tabs and devices.
-      const won = await claimInitialSeed()
-      if (!won) return loaded
-
-      const seeded = seedForNewUser(boot)
-      beginSync(userId!, { tasks: [], projects: [], tags: [] })
-      diffAndPersist({ tasks: [], projects: [], tags: [] }, seeded, userId!)
-      await flushSync()
-      // Re-arm the baseline to the seeded data so we don't re-write it.
-      beginSync(userId!, seeded)
-      return seeded
-    },
+    // Always return exactly the user's own rows — nothing more. New accounts
+    // return an empty dataset and stay empty until the user adds their own data.
+    queryFn: (): Promise<Bootstrap> => loadBootstrap(),
   })
 
   useEffect(() => {
