@@ -12,6 +12,16 @@ Supabase.
 - `migrations/0003_remove_seed.sql` — removes the demo-seeding mechanism
   entirely (drops `claim_initial_seed()` and `profiles.seeded_at`). New
   accounts now start with a completely empty workspace.
+- `migrations/0004_realtime_replica_identity.sql` — sets `replica identity`
+  so Realtime delivers full row payloads for updates/deletes.
+- `migrations/0005_task_options_and_project_desc_settings.sql` — adds
+  `remember_last_task_options` and `show_project_descriptions` to
+  `user_settings`.
+- `migrations/0006_multiselect_and_calendar_range_settings.sql` — adds
+  `multi_select_enabled` (master switch for Multi-Select mode) plus
+  `calendar_start_hour` / `calendar_end_hour` (visible Day/Week time range)
+  to `user_settings`. All default to prior behaviour (multi-select on,
+  0:00–24:00).
 
 Apply them in order with either:
 

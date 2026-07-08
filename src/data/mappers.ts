@@ -57,6 +57,7 @@ export type SettingsRow = {
   dnd_enabled: boolean; calendar_side_panel: boolean;
   undo_toast_enabled: boolean; undo_toast_duration: number
   remember_last_task_options: boolean; show_project_descriptions: boolean
+  multi_select_enabled: boolean; calendar_start_hour: number; calendar_end_hour: number
 }
 
 /* Normalize a DB `time` value ("14:00:00") to the app's "HH:mm". */
@@ -139,6 +140,9 @@ export function rowToSettings(r: SettingsRow): UserSettings {
     undoToastDuration: r.undo_toast_duration,
     rememberLastTaskOptions: r.remember_last_task_options ?? false,
     showProjectDescriptions: r.show_project_descriptions ?? false,
+    multiSelectEnabled: r.multi_select_enabled ?? true,
+    calendarStartHour: r.calendar_start_hour ?? 0,
+    calendarEndHour: r.calendar_end_hour ?? 24,
   }
 }
 
@@ -232,5 +236,8 @@ export function settingsToRow(s: Partial<UserSettings>, userId: string): Partial
   if (s.undoToastDuration !== undefined) row.undo_toast_duration = s.undoToastDuration
   if (s.rememberLastTaskOptions !== undefined) row.remember_last_task_options = s.rememberLastTaskOptions
   if (s.showProjectDescriptions !== undefined) row.show_project_descriptions = s.showProjectDescriptions
+  if (s.multiSelectEnabled !== undefined) row.multi_select_enabled = s.multiSelectEnabled
+  if (s.calendarStartHour !== undefined) row.calendar_start_hour = s.calendarStartHour
+  if (s.calendarEndHour !== undefined) row.calendar_end_hour = s.calendarEndHour
   return row
 }

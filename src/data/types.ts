@@ -56,4 +56,10 @@ export type UserSettings = {
   rememberLastTaskOptions: boolean
   /** When true, project cards show the project description. */
   showProjectDescriptions: boolean
+  /** Master switch for Multi-Select mode (hover checkbox, long-press, shortcuts). */
+  multiSelectEnabled: boolean
+  /** First visible hour (0-23) in the Day/Week calendar views. */
+  calendarStartHour: number
+  /** Last visible hour (1-24) in the Day/Week calendar views. */
+  calendarEndHour: number
 }
