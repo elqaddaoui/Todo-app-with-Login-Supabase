@@ -116,6 +116,13 @@ const navItems = [
 ]
 const todayStr = format(new Date(), 'yyyy-MM-dd')
 const d = (n: number) => format(addDays(new Date(), n), 'yyyy-MM-dd')
+
+/* Human-friendly label for a calendar hour (0–24). 0 → "12:00 AM",
+   12 → "12:00 PM", 24 → "12:00 AM" (midnight, end of day). */
+const formatHourLabel = (h: number): string => {
+  if (h >= 24) return '12:00 AM'
+  return format(new Date(2000, 0, 1, h, 0), 'h:mm a')
+}
 const nowIso = () => new Date().toISOString()
 
 /* Brand-new accounts start with a COMPLETELY EMPTY workspace. We never seed
@@ -214,6 +221,11 @@ const useUI = create<{
   calendarSidePanel: boolean;
   quickParentId: string | null;
   quickSettings: boolean;
+  // Ephemeral view-context hints for the global New Task panel. Pages whose
+  // "current selection" lives in local state (Tags → active tag, Calendar →
+  // viewed date) publish it here so QuickAdd can inherit it. Not persisted.
+  quickTagId: string | null;
+  quickCalendarDate: string | null;
   // Undo/Redo toast preferences
   undoToastEnabled: boolean;
   undoToastDuration: number; // milliseconds the toast stays visible
@@ -221,6 +233,11 @@ const useUI = create<{
   rememberLastTaskOptions: boolean;
   // When true, project cards show the project description.
   showProjectDescriptions: boolean;
+  // Master switch for Multi-Select mode (hover checkbox, long-press, shortcuts).
+  multiSelectEnabled: boolean;
+  // Visible time range for the Day/Week calendar views.
+  calendarStartHour: number;
+  calendarEndHour: number;
   set: (p: Partial<any>) => void
 }>()(persist(
   (set) => ({
@@ -232,10 +249,15 @@ const useUI = create<{
     calendarSidePanel: true,
     quickParentId: null,
     quickSettings: false,
+    quickTagId: null,
+    quickCalendarDate: null,
     undoToastEnabled: true,
     undoToastDuration: 2000,
     rememberLastTaskOptions: false,
     showProjectDescriptions: false,
+    multiSelectEnabled: true,
+    calendarStartHour: 0,
+    calendarEndHour: 24,
     set: (p) => set(p),
   }),
   { name: 'orbit-ui' }
@@ -271,6 +293,9 @@ const pickSettings = (s: ReturnType<typeof useUI.getState>): UserSettings => ({
   undoToastEnabled: s.undoToastEnabled, undoToastDuration: s.undoToastDuration,
   rememberLastTaskOptions: s.rememberLastTaskOptions,
   showProjectDescriptions: s.showProjectDescriptions,
+  multiSelectEnabled: s.multiSelectEnabled,
+  calendarStartHour: s.calendarStartHour,
+  calendarEndHour: s.calendarEndHour,
 })
 
 /* Persist settings to Supabase whenever a backed field changes. The
@@ -302,6 +327,11 @@ function applyLoadedSettings(s: UserSettings) {
 /** Global drag-and-drop toggle. Read this anywhere a drag interaction is
  *  wired up; when it returns false the interaction must become inert. */
 const useDndEnabled = () => useUI(s => s.dndEnabled)
+
+/** Master Multi-Select switch. When false the hover selection checkbox is
+ *  hidden, the mobile long-press never enters selection mode, and the
+ *  Ctrl/Cmd-click + Ctrl/Cmd+A shortcuts are inert. */
+const useMultiSelectEnabled = () => useUI(s => s.multiSelectEnabled)
 
 // Apply compact mode class to <html> so CSS can target it globally
 const applyCompactMode = (on: boolean) => {
@@ -1417,7 +1447,18 @@ const subTasks = (tasks: Task[], id: string) => tasks.filter(t => t.parentId ===
    `deriveCreationContext(pathname, params)` returns a partial Task describing
    the defaults for the current route. The ONLY views that intentionally
    create unassigned tasks are the "all tasks" style views (all-tasks,
-   dashboard, calendar, upcoming) where no single bucket is implied.
+   dashboard) where no single bucket is implied.
+
+   Route → inherited context:
+     • Project (/projects/:id) → current project
+     • Today (/today)          → due today
+     • Upcoming (/upcoming)    → due tomorrow
+     • Calendar (/calendar)    → the currently-viewed calendar date
+     • Tag (/tags)             → the currently-selected tag
+     • Favorites (/favorites)  → favorited
+     • Completed (/completed)  → status = done
+     • Archive (/archive)      → archived
+     • All Tasks / Dashboard   → unassigned (no default selection)
    ============================================================ */
 export type CreationContext = Partial<Pick<Task,
   'projectId' | 'dueDate' | 'favorite' | 'status' | 'tags' | 'archived'>>
@@ -1426,20 +1467,19 @@ export type CreationContext = Partial<Pick<Task,
 function isUnassignedContextRoute(pathname: string): boolean {
   return (
     pathname.startsWith('/all-tasks') ||
-    pathname.startsWith('/dashboard') ||
-    pathname.startsWith('/upcoming') ||
-    pathname.startsWith('/calendar')
+    pathname.startsWith('/dashboard')
   )
 }
 
 /**
  * Derive the creation defaults implied by the current view. `activeTagId` is
- * the tag currently selected on the Tags page (context lives in that page's
- * local state, so it must be threaded in when known).
+ * the tag currently selected on the Tags page and `calendarDate` is the date
+ * currently viewed on the Calendar page — both live in page-local state, so
+ * they must be threaded in when known.
  */
 function deriveCreationContext(
   pathname: string,
-  params: { projectId?: string; activeTagId?: string } = {},
+  params: { projectId?: string; activeTagId?: string; calendarDate?: string } = {},
 ): CreationContext {
   // Project view → file under that project.
   if (pathname.startsWith('/projects/') && params.projectId) {
@@ -1447,6 +1487,10 @@ function deriveCreationContext(
   }
   // Today → due today so it shows up in the Today bucket immediately.
   if (pathname.startsWith('/today')) return { dueDate: todayStr }
+  // Upcoming → due tomorrow so it lands in the Upcoming bucket.
+  if (pathname.startsWith('/upcoming')) return { dueDate: d(1) }
+  // Calendar → due on the date currently being viewed (falls back to today).
+  if (pathname.startsWith('/calendar')) return { dueDate: params.calendarDate ?? todayStr }
   // Favorites → mark favorite so it appears in the Favorites bucket.
   if (pathname.startsWith('/favorites')) return { favorite: true }
   // Completed → create it already done (its natural bucket).
@@ -1459,8 +1503,7 @@ function deriveCreationContext(
   if (pathname.startsWith('/tags') && params.activeTagId) {
     return { tags: [params.activeTagId] }
   }
-  // Everything else (all-tasks, dashboard, calendar, upcoming, projects list)
-  // creates an unassigned task.
+  // Everything else (all-tasks, dashboard, projects list) → unassigned.
   return {}
 }
 
@@ -1468,7 +1511,7 @@ function deriveCreationContext(
  * Hook that reads the current route and returns the creation context plus a
  * helper to merge it into a new task. `activeTagId` is passed by the Tags page.
  */
-function useCreationContext(activeTagId?: string): {
+function useCreationContext(opts?: { activeTagId?: string; calendarDate?: string }): {
   context: CreationContext
   isUnassigned: boolean
   buildDefaults: () => Partial<Task>
@@ -1478,7 +1521,8 @@ function useCreationContext(activeTagId?: string): {
   const pathname = location.pathname
   const context = deriveCreationContext(pathname, {
     projectId: (params as { id?: string }).id,
-    activeTagId,
+    activeTagId: opts?.activeTagId,
+    calendarDate: opts?.calendarDate,
   })
   const isUnassigned = isUnassignedContextRoute(pathname)
   const buildDefaults = () => {
@@ -1707,8 +1751,12 @@ function buildTaskMenu(
   const moveCandidates = allTasks
     .filter(t => !t.archived && t.id !== task.id && !descendants.has(t.id))
     .slice(0, 30) // keep submenu reasonable
+  // "Select" only makes sense while Multi-Select mode is enabled in Settings.
+  const multiSelectEnabled = useUI.getState().multiSelectEnabled
   return [
-    { kind: 'item', label: 'Select', icon: <CheckCircle2 className='h-3.5 w-3.5' />, onClick: ctx.onSelect || (() => {}) },
+    ...(multiSelectEnabled
+      ? [{ kind: 'item', label: 'Select', icon: <CheckCircle2 className='h-3.5 w-3.5' />, onClick: ctx.onSelect || (() => {}) } as CtxItem]
+      : []),
     { kind: 'item', label: 'Create subtask', icon: <Plus className='h-3.5 w-3.5' />, onClick: ctx.onAddSubtask || (() => {}) },
     { kind: 'item', label: 'Rename', icon: <Pencil className='h-3.5 w-3.5' />, onClick: ctx.onRename },
     { kind: 'item', label: 'Duplicate', icon: <Copy className='h-3.5 w-3.5' />, onClick: () => d.duplicateTask(task.id) },
@@ -2117,6 +2165,7 @@ function TaskRow({ task, showProject = true, depth = 0 }: { task: Task; showProj
   const [confirming, setConfirming] = useState(false)
 
   // ---- Multi-select ----
+  const multiSelectEnabled = useMultiSelectEnabled()
   const selectionActive = useSelectionActive()
   const isChecked = useIsSelected(task.id)
   // Range-select support (shift-click extends from anchor over the visible list).
@@ -2145,8 +2194,9 @@ function TaskRow({ task, showProject = true, depth = 0 }: { task: Task; showProj
       else useSelection.getState().toggle(task.id)
       return
     }
-    // Ctrl/Cmd-click enters selection mode from a normal list.
-    if (e.metaKey || e.ctrlKey) {
+    // Ctrl/Cmd-click enters selection mode from a normal list (only when
+    // Multi-Select is enabled in App Settings).
+    if (multiSelectEnabled && (e.metaKey || e.ctrlKey)) {
       useSelection.getState().enter(task.id)
       return
     }
@@ -2209,6 +2259,10 @@ function TaskRow({ task, showProject = true, depth = 0 }: { task: Task; showProj
   // at touchstart. Without this the menu could pop open mid-drag.
   const anyDragActiveRef = useRef(anyDragActive)
   anyDragActiveRef.current = anyDragActive
+  // Live ref so the (closured) long-press timer reads the CURRENT Multi-Select
+  // setting when it fires, not the value captured at touchstart.
+  const multiSelectEnabledRef = useRef(multiSelectEnabled)
+  multiSelectEnabledRef.current = multiSelectEnabled
   // Once a drag begins anywhere, immediately kill any pending long-press timer
   // on this row so it can't fire after the drag ends either.
   useEffect(() => { if (anyDragActive) cancelLongPress() }, [anyDragActive])
@@ -2231,8 +2285,13 @@ function TaskRow({ task, showProject = true, depth = 0 }: { task: Task; showProj
     // a normal tap can never accidentally select, and a tap on the status
     // checkbox only toggles status. ----
     if (isMobileTaskCard) {
+      // Multi-Select disabled → a long-press must NOT enter selection mode.
+      // (A plain tap still opens the task; nothing selection-related happens.)
+      if (!multiSelectEnabledRef.current) return
       if (touchStartedOnControl(e.target)) return
       longPressRef.current.t = setTimeout(() => {
+        // Re-check the setting at fire time in case it changed mid-press.
+        if (!multiSelectEnabledRef.current) { cancelLongPress(); return }
         // Never hijack an in-progress drag.
         if (anyDragActiveRef.current || dragActiveStore.get()) { cancelLongPress(); return }
         longPressRef.current.fired = true
@@ -2297,7 +2356,7 @@ function TaskRow({ task, showProject = true, depth = 0 }: { task: Task; showProj
         ref={setNodeRef}
         {...rowDragAttributes}
         {...rowDragListeners}
-        className={cn('group panel p-3 task-row', dndEnabled && !selectionActive && 'cursor-grab active:cursor-grabbing task-row-draggable', isSelected && 'is-selected', isChecked && 'is-multiselected', nestHighlight && 'task-row-nest-target', isContextParent && 'task-row-search-context', inDragGroup && 'task-row-drag-group')}
+        className={cn('group panel p-3 task-row', dndEnabled && !selectionActive && 'cursor-grab active:cursor-grabbing task-row-draggable', isSelected && 'is-selected', isChecked && 'is-multiselected', nestHighlight && 'task-row-nest-target', isContextParent && 'task-row-search-context', inDragGroup && 'task-row-drag-group', selectionActive && 'select-none')}
         onClick={handleRowClick}
         onContextMenu={isMobileTaskCard ? (e) => { e.preventDefault(); e.stopPropagation() } : openMenu}
         onTouchStart={onTouchStart}
@@ -2321,7 +2380,10 @@ function TaskRow({ task, showProject = true, depth = 0 }: { task: Task; showProj
             }}
             className={cn(
               'task-select-checkbox mt-0.5 shrink-0 h-4 w-4 rounded border items-center justify-center transition',
-              selectionActive ? 'inline-flex' : 'hidden group-hover:inline-flex',
+              // Hover-to-reveal only when Multi-Select is enabled AND we're not
+              // already in selection mode. When disabled the checkbox never
+              // shows (no hover reveal), so the row stays clean.
+              !multiSelectEnabled ? 'hidden' : selectionActive ? 'inline-flex' : 'hidden group-hover:inline-flex',
               isChecked ? 'bg-indigo-500 border-indigo-500 text-white' : 'border-zinc-300 dark:border-zinc-600 text-transparent hover:border-indigo-400',
             )}
             aria-label={isChecked ? 'Deselect task' : 'Select task'}
@@ -4052,6 +4114,12 @@ function TagsPage() {
   const [tab, setTab] = useState<'view' | 'manage'>('view')
   const [active, setActive] = useState(tags[0]?.id || '')
   const [confirmDel, setConfirmDel] = useState<Tag | null>(null)
+  // Publish the currently-viewed tag so the global New Task panel inherits it.
+  const setUI = useUI(s => s.set)
+  useEffect(() => {
+    useUI.getState().set({ quickTagId: tab === 'view' ? (active || null) : null })
+    return () => { useUI.getState().set({ quickTagId: null }) }
+  }, [active, tab, setUI])
   const [newName, setNewName] = useState('')
   const f = useData(s => s.filters)
   const filtered = sortTasks(tasks.filter(t => (active ? t.tags.includes(active) : false) && taskMatches(t, f, { allTasks: tasks })))
@@ -4178,6 +4246,85 @@ function SettingsContent({ compact = false }: { compact?: boolean }) {
             onChange={() => ui.set({ dndEnabled: !ui.dndEnabled })}
             label='Enable or disable drag and drop'
           />
+        </div>
+      </Card>
+
+      {/* ====== Multi-Select toggle ====== */}
+      <Card className={cn(compact && '!p-4')}>
+        <div className='flex items-start gap-3'>
+          <div className='flex-1'>
+            <div className='text-sm font-semibold flex items-center gap-2'>
+              <CheckCircle2 className='h-4 w-4 text-zinc-500' />Multi-Select
+            </div>
+            <div className='mt-1 text-xs text-zinc-500'>
+              {ui.multiSelectEnabled ? 'Enabled' : 'Disabled'} — lets you select
+              multiple tasks at once for bulk actions. On desktop the selection
+              checkbox appears on hover and {typeof navigator !== 'undefined' && /Mac/.test(navigator.platform) ? '⌘' : 'Ctrl'}-click /
+              {typeof navigator !== 'undefined' && /Mac/.test(navigator.platform) ? ' ⌘A' : ' Ctrl+A'} work.
+              On mobile, long-press a task to start selecting. Turn off to hide
+              the selection UI entirely.
+            </div>
+          </div>
+          <Switch
+            checked={ui.multiSelectEnabled}
+            onChange={() => ui.set({ multiSelectEnabled: !ui.multiSelectEnabled })}
+            label='Enable or disable Multi-Select'
+          />
+        </div>
+      </Card>
+
+      {/* ====== Calendar visible time range ====== */}
+      <Card className={cn(compact && '!p-4')}>
+        <div className='flex items-start gap-3'>
+          <div className='flex-1'>
+            <div className='text-sm font-semibold flex items-center gap-2'>
+              <Clock3 className='h-4 w-4 text-zinc-500' />Calendar time range
+            </div>
+            <div className='mt-1 text-xs text-zinc-500'>
+              Choose the visible start and end hours for the calendar's Day and
+              Week views. Currently showing{' '}
+              <span className='font-medium text-[hsl(var(--foreground))]'>
+                {formatHourLabel(ui.calendarStartHour)} – {formatHourLabel(ui.calendarEndHour)}
+              </span>.
+            </div>
+          </div>
+        </div>
+        <div className='mt-4 grid grid-cols-2 gap-3'>
+          <label className='block'>
+            <span className='field-label'>Start hour</span>
+            <select
+              className='input'
+              value={ui.calendarStartHour}
+              onChange={e => {
+                const start = Number(e.target.value)
+                // Keep end strictly after start so the range is always valid.
+                const end = ui.calendarEndHour <= start ? Math.min(start + 1, 24) : ui.calendarEndHour
+                ui.set({ calendarStartHour: start, calendarEndHour: end })
+              }}
+              aria-label='Calendar start hour'
+            >
+              {Array.from({ length: 24 }, (_, h) => h).map(h => (
+                <option key={h} value={h}>{formatHourLabel(h)}</option>
+              ))}
+            </select>
+          </label>
+          <label className='block'>
+            <span className='field-label'>End hour</span>
+            <select
+              className='input'
+              value={ui.calendarEndHour}
+              onChange={e => {
+                const end = Number(e.target.value)
+                const start = ui.calendarStartHour >= end ? Math.max(end - 1, 0) : ui.calendarStartHour
+                ui.set({ calendarEndHour: end, calendarStartHour: start })
+              }}
+              aria-label='Calendar end hour'
+            >
+              {Array.from({ length: 24 }, (_, h) => h + 1).map(h => (
+                <option key={h} value={h}>{formatHourLabel(h)}</option>
+              ))}
+            </select>
+          </label>
         </div>
       </Card>
 
@@ -5279,7 +5426,7 @@ function KanbanTaskCard({ task, onDragStart, onDragEnd }: { task: Task; onDragSt
       onDragEnd={dndEnabled ? onDragEnd : undefined}
       onContextMenu={isMobileTaskCard ? (e) => { e.preventDefault(); e.stopPropagation() } : openMenu}
       onClick={handleCardClick}
-      className={cn('panel compact-card p-3 hover:shadow-sm transition', dndEnabled && !selectionActive && 'cursor-grab active:cursor-grabbing', isChecked && 'is-multiselected ring-2 ring-indigo-500/50')}
+      className={cn('panel compact-card p-3 hover:shadow-sm transition', dndEnabled && !selectionActive && 'cursor-grab active:cursor-grabbing', isChecked && 'is-multiselected ring-2 ring-indigo-500/50', selectionActive && 'select-none')}
     >
       {ctx.node}
       {renaming && <NamePrompt title='Rename task' initial={task.title} label='Title' onClose={() => setRenaming(false)} onSave={(v) => updateTask(task.id, { title: v })} />}
@@ -5950,13 +6097,15 @@ function MobileCalendarMonth({
    is completely untouched.
    ============================================================ */
 
-// Hours rendered in the mobile Day/Week time grids (7:00 → 21:00).
-const MOBILE_DAY_START_HOUR = 7
-const MOBILE_DAY_END_HOUR = 21
-const mobileHours = Array.from(
-  { length: MOBILE_DAY_END_HOUR - MOBILE_DAY_START_HOUR + 1 },
-  (_, i) => MOBILE_DAY_START_HOUR + i,
-)
+// Build the list of hour rows for the mobile Day/Week time grids from the
+// user's configured calendar range. `end` is exclusive-ish: an end hour of 24
+// means "up to midnight", so we render rows [start .. end-1]. Always render at
+// least one row so the grid never collapses to nothing.
+function buildMobileHours(start: number, end: number): number[] {
+  const s = Math.max(0, Math.min(23, start))
+  const e = Math.max(s + 1, Math.min(24, end))
+  return Array.from({ length: e - s }, (_, i) => s + i)
+}
 
 function mobileEventChipStyle(task: Task) {
   const hex = priorityMeta[task.priority].hex
@@ -6065,6 +6214,9 @@ function MobileCalendarWeek({
   onSelectSlot: (day: Date, hour: number) => void
 }) {
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null)
+  const startHour = useUI(s => s.calendarStartHour)
+  const endHour = useUI(s => s.calendarEndHour)
+  const mobileHours = useMemo(() => buildMobileHours(startHour, endHour), [startHour, endHour])
   const weekDays = useMemo(() => {
     const first = startOfWeek(date, { weekStartsOn: 1 })
     return eachDayOfInterval({ start: first, end: endOfWeek(date, { weekStartsOn: 1 }) })
@@ -6140,6 +6292,9 @@ function MobileCalendarDay({
   onSelectSlot: (hour: number) => void
 }) {
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null)
+  const startHour = useUI(s => s.calendarStartHour)
+  const endHour = useUI(s => s.calendarEndHour)
+  const mobileHours = useMemo(() => buildMobileHours(startHour, endHour), [startHour, endHour])
   const dayKey = format(date, 'yyyy-MM-dd')
   const dayEvents = useMemo(
     () => events.filter(e => format(e.start as Date, 'yyyy-MM-dd') === dayKey),
@@ -6196,6 +6351,9 @@ function CalendarPage() {
   const calendarTarget = useUI(s => s.calendarTarget)
   const sidePanelEnabled = useUI(s => s.calendarSidePanel)
   const dndEnabled = useDndEnabled()
+  const multiSelectEnabled = useMultiSelectEnabled()
+  const calendarStartHour = useUI(s => s.calendarStartHour)
+  const calendarEndHour = useUI(s => s.calendarEndHour)
   const selectionActive = useSelectionActive()
   const selectedCount = useSelection(s => s.ids.size)
   const isMobile = useMedia('(max-width: 768px)')
@@ -6207,6 +6365,12 @@ function CalendarPage() {
   // can opt in to it explicitly via the view switcher.)
   const [view, setView] = useState<View>(isMobile ? Views.DAY : Views.WEEK)
   const [date, setDate] = useState(new Date())
+  // Publish the currently-viewed date so the global New Task panel schedules
+  // new tasks onto the day the user is actually looking at.
+  useEffect(() => {
+    useUI.getState().set({ quickCalendarDate: format(date, 'yyyy-MM-dd') })
+    return () => { useUI.getState().set({ quickCalendarDate: null }) }
+  }, [date])
   // Tapping a calendar slot captures its start/end/view here, then opens a small
   // chooser popup that lets the user create a New Task or attach an Existing one.
   const [slotDraft, setSlotDraft] = useState<null | { start: Date; end: Date; view: View }>(null)
@@ -6440,6 +6604,17 @@ function CalendarPage() {
   const allViews: View[] = [Views.DAY, Views.WEEK, Views.MONTH, Views.AGENDA]
   const viewChoices = allViews
 
+  // Visible time-window for the Day/Week views, from App Settings. RBC reads
+  // only the time portion of these Dates. `max` at hour 24 clamps to 23:59:59
+  // so the final hour row is fully shown without spilling to the next day.
+  const calMin = useMemo(() => new Date(2000, 0, 1, Math.min(calendarStartHour, 23), 0, 0), [calendarStartHour])
+  const calMax = useMemo(
+    () => calendarEndHour >= 24
+      ? new Date(2000, 0, 1, 23, 59, 59)
+      : new Date(2000, 0, 1, calendarEndHour, 0, 0),
+    [calendarEndHour],
+  )
+
   return (
     <div className={cn('calendar-page p-4 sm:p-6 h-full flex gap-4', showSidePanel ? 'calendar-page-with-panel' : 'flex-col')}>
       <div className='min-h-0 flex-1 flex flex-col gap-3 sm:gap-4'>
@@ -6451,7 +6626,9 @@ function CalendarPage() {
             {format(date, view === Views.MONTH ? 'MMMM yyyy' : isMobile ? 'EEE, MMM d' : 'MMM d, yyyy')}
           </div>
           {/* Multi-select toggle: entering selection mode lets the user tap events
-              to build a selection that the global BulkActionBar then acts on. */}
+              to build a selection that the global BulkActionBar then acts on.
+              Hidden entirely when Multi-Select is disabled in App Settings. */}
+          {multiSelectEnabled && (
           <button
             className={cn('btn !h-9 !px-3 text-xs sm:text-sm shrink-0', selectionActive ? 'btn-primary' : 'btn-secondary')}
             onClick={() => selectionActive ? useSelection.getState().exit() : useSelection.getState().enter()}
@@ -6459,6 +6636,7 @@ function CalendarPage() {
           >
             {selectionActive ? <><X className='h-4 w-4 sm:mr-1' /><span className='hidden sm:inline'>Done{selectedCount ? ` (${selectedCount})` : ''}</span></> : <><CheckCircle2 className='h-4 w-4 sm:mr-1' /><span className='hidden sm:inline'>Select</span></>}
           </button>
+          )}
           {/* Mobile: compact view-switcher as a select to save horizontal space */}
           {isMobile ? (
             <select
@@ -6528,6 +6706,8 @@ function CalendarPage() {
             date={date}
             onNavigate={setDate}
             views={['day', 'week', 'month', 'agenda']}
+            min={calMin}
+            max={calMax}
             selectable
             resizable={dndEnabled}
             draggableAccessor={() => dndEnabled}
@@ -6825,6 +7005,7 @@ function ExistingTaskPicker({
 const schema = z.object({
   title: z.string().min(1),
   priority: z.enum(['low', 'medium', 'high', 'urgent']).default('medium'),
+  status: z.enum(['not_started', 'planned', 'in_progress', 'waiting', 'blocked', 'done', 'cancelled']).default('not_started'),
   projectId: z.string().optional(),
   dueDate: z.string().optional(),
   time: z.string().optional(),
@@ -6837,9 +7018,15 @@ function QuickAdd() {
   const projects = useData(s => s.projects)
   const tags = useData(s => s.tags)
   const rememberEnabled = useUI(s => s.rememberLastTaskOptions)
+  // View-context hints published by pages with local selection state.
+  const quickTagId = useUI(s => s.quickTagId)
+  const quickCalendarDate = useUI(s => s.quickCalendarDate)
   // Derive the current view's creation context so the new task inherits it.
-  const { context, isUnassigned, buildDefaults } = useCreationContext()
-  const { control, register, handleSubmit, watch, setValue, reset } = useForm<QuickForm>({ resolver: zodResolver(schema), defaultValues: { title: '', priority: 'medium', projectId: '' } })
+  const { context, isUnassigned, buildDefaults } = useCreationContext({
+    activeTagId: quickTagId ?? undefined,
+    calendarDate: quickCalendarDate ?? undefined,
+  })
+  const { control, register, handleSubmit, watch, setValue, reset } = useForm<QuickForm>({ resolver: zodResolver(schema), defaultValues: { title: '', priority: 'medium', status: 'not_started', projectId: '' } })
   const title = watch('title')
   const parsed = parseNL(title || '')
 
@@ -6851,6 +7038,9 @@ function QuickAdd() {
     reset({
       title: '',
       priority: (defaults.priority as Priority) ?? 'medium',
+      // Status selector: seed from the view context (e.g. Completed → done)
+      // so the panel opens on the status the current view implies.
+      status: (context.status as Status) ?? 'not_started',
       projectId: defaults.projectId ?? context.projectId ?? '',
       dueDate: defaults.dueDate ?? context.dueDate ?? undefined,
       time: undefined,
@@ -6865,7 +7055,11 @@ function QuickAdd() {
       const p = projects.find(x => x.id === context.projectId)
       return p ? `Project · ${p.name}` : null
     }
-    if (context.dueDate === todayStr) return 'Scheduled · Today'
+    if (context.dueDate) {
+      if (context.dueDate === todayStr) return 'Scheduled · Today'
+      if (context.dueDate === d(1)) return 'Scheduled · Tomorrow'
+      return `Scheduled · ${format(parseISO(context.dueDate), 'MMM d')}`
+    }
     if (context.favorite) return 'Added to · Favorites'
     if (context.status === 'done') return 'Created as · Completed'
     if (context.archived) return 'Created in · Archive'
@@ -6892,15 +7086,18 @@ function QuickAdd() {
               // Merge: view context is the base, form values override where set.
               const chosenProjectId = v.projectId || context.projectId || undefined
               const chosenPriority = v.priority || nl.priority || 'medium'
+              // Status: the explicit selector wins; falls back to the view
+              // context (e.g. Completed → done) when left at its default.
+              const chosenStatus = (v.status as Status) || context.status || 'not_started'
               const newTask: Partial<Task> & { title: string } = {
                 title: nl.title,
                 dueDate: v.dueDate || nl.dueDate || context.dueDate,
                 time: v.time || nl.time,
                 priority: chosenPriority,
                 projectId: chosenProjectId,
-                // Inherit non-form context bits (favorite / status / archived / tags).
+                status: chosenStatus,
+                // Inherit non-form context bits (favorite / archived / tags).
                 favorite: context.favorite,
-                status: context.status,
                 archived: context.archived,
                 tags: context.tags,
               }
@@ -6948,23 +7145,45 @@ function QuickAdd() {
                   }}>Apply</button>
                 </div>
               )}
-              <div className='popup-body grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3 p-4'>
-                <input type='date' className='input' {...register('dueDate')} />
-                <input type='time' className='input' {...register('time')} />
-                <Controller control={control} name='priority' render={({ field }) => (
-                  <select className='input' {...field}>
-                    <option value='low'>Low</option>
-                    <option value='medium'>Medium</option>
-                    <option value='high'>High</option>
-                    <option value='urgent'>Urgent</option>
-                  </select>
-                )} />
-                <Controller control={control} name='projectId' render={({ field }) => (
-                  <select className='input' {...field}>
-                    <option value=''>No project</option>
-                    {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-                  </select>
-                )} />
+              <div className='popup-body grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3 p-4'>
+                <label className='block'>
+                  <span className='field-label'>Due date</span>
+                  <input type='date' className='input' {...register('dueDate')} />
+                </label>
+                <label className='block'>
+                  <span className='field-label'>Time</span>
+                  <input type='time' className='input' {...register('time')} />
+                </label>
+                <label className='block'>
+                  <span className='field-label'>Status</span>
+                  <Controller control={control} name='status' render={({ field }) => (
+                    <select className='input' {...field}>
+                      {(Object.keys(statusMeta) as Status[]).map(s => (
+                        <option key={s} value={s}>{statusMeta[s].label}</option>
+                      ))}
+                    </select>
+                  )} />
+                </label>
+                <label className='block'>
+                  <span className='field-label'>Priority</span>
+                  <Controller control={control} name='priority' render={({ field }) => (
+                    <select className='input' {...field}>
+                      <option value='low'>Low</option>
+                      <option value='medium'>Medium</option>
+                      <option value='high'>High</option>
+                      <option value='urgent'>Urgent</option>
+                    </select>
+                  )} />
+                </label>
+                <label className='block sm:col-span-2 md:col-span-1'>
+                  <span className='field-label'>Project</span>
+                  <Controller control={control} name='projectId' render={({ field }) => (
+                    <select className='input' {...field}>
+                      <option value=''>No project</option>
+                      {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                    </select>
+                  )} />
+                </label>
               </div>
               <div className='flex items-center justify-between gap-2 px-4 py-3 border-t bg-zinc-50 dark:bg-zinc-900'>
                 <div className='text-xs text-zinc-500 hidden sm:block'>Natural language enabled</div>
@@ -7667,6 +7886,8 @@ function Layout() {
       if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'a') {
         const ui = useUI.getState()
         if (ui.command || ui.quick || ui.filters) return
+        // Multi-Select disabled → don't hijack native select-all.
+        if (!ui.multiSelectEnabled) return
         const ids = getAllVisibleTaskIds()
         if (ids.length === 0) return
         e.preventDefault()
@@ -7727,6 +7948,13 @@ function Layout() {
     useSelection.getState().exit()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [location.pathname])
+
+  // Turning Multi-Select OFF while a selection is active must immediately drop
+  // out of selection mode so no stale selection UI / BulkActionBar lingers.
+  const multiSelectEnabled = useUI(s => s.multiSelectEnabled)
+  useEffect(() => {
+    if (!multiSelectEnabled) useSelection.getState().exit()
+  }, [multiSelectEnabled])
 
   /* ---- BUG FIX: mobile Back should return to previous in-app page ----
      Push a synthetic history state when overlays open, and intercept the
