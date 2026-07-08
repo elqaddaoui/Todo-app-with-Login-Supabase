@@ -5791,18 +5791,128 @@ function MarkdownPreview({ text }: { text: string }) {
   return <div className='doc-preview-body'>{blocks}</div>
 }
 
+/* ============================================================
+   useDebouncedTextField — local-first text editing for large,
+   store-backed fields (project docs, task title/description).
+
+   Problem it solves
+   -----------------
+   Binding a <textarea>/<input> directly to a Zustand-store value means
+   EVERY keystroke:
+     • mutates the global store,
+     • fires the sync subscriber → a Supabase write,
+     • pushes an undo command,
+     • re-renders every subscriber of that slice.
+   That causes typing jank, dropped characters, and a flood of DB writes.
+
+   Behaviour
+   ---------
+   • While typing, edits stay purely LOCAL (no store writes → no Supabase
+     writes, no re-renders of other components, no undo spam).
+   • Changes are committed to the store on a debounce (`delay` ms after the
+     last keystroke) and IMMEDIATELY on blur, Ctrl/Cmd+S, route navigation,
+     tab hide (pagehide/visibilitychange) and unmount.
+   • Real-time sync is preserved: when the field is NOT being actively edited
+     (no pending local edit), an inbound change to `value` (e.g. from another
+     device) refreshes the local buffer. While the user is mid-edit we keep
+     their local text so remote echoes never clobber in-flight typing.
+
+   The returned `value` is always the local buffer, so rendering is instant
+   and never interrupted by upstream store churn.
+   ============================================================ */
+function useDebouncedTextField(
+  value: string,
+  commit: (v: string) => void,
+  opts: { delay?: number } = {},
+) {
+  const delay = opts.delay ?? 700
+  const [local, setLocalState] = useState(value)
+
+  // Refs kept in sync so the debounce/flush closures never read stale data.
+  const localRef = useRef(local)
+  const dirtyRef = useRef(false)          // true when local ≠ committed store value
+  const commitRef = useRef(commit)
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const lastCommittedRef = useRef(value)  // last value we pushed to the store
+
+  useEffect(() => { commitRef.current = commit }, [commit])
+
+  // Adopt inbound (remote/store) changes ONLY when the user isn't mid-edit.
+  // This keeps real-time sync working without ever interrupting typing.
+  useEffect(() => {
+    if (dirtyRef.current) return
+    if (value !== localRef.current) {
+      localRef.current = value
+      lastCommittedRef.current = value
+      setLocalState(value)
+    }
+  }, [value])
+
+  const doCommit = () => {
+    if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null }
+    if (!dirtyRef.current) return
+    dirtyRef.current = false
+    const v = localRef.current
+    if (v !== lastCommittedRef.current) {
+      lastCommittedRef.current = v
+      commitRef.current(v)
+    }
+  }
+  const flushRef = useRef(doCommit)
+  flushRef.current = doCommit
+
+  const setLocal = (next: string) => {
+    localRef.current = next
+    dirtyRef.current = next !== lastCommittedRef.current
+    setLocalState(next)
+    if (timerRef.current) clearTimeout(timerRef.current)
+    if (dirtyRef.current) {
+      timerRef.current = setTimeout(() => flushRef.current(), delay)
+    }
+  }
+
+  const onBlur = () => flushRef.current()
+
+  // Ctrl/Cmd+S — commit immediately (and swallow the browser "save page").
+  const onKeyDownSave = (e: React.KeyboardEvent) => {
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') {
+      e.preventDefault()
+      flushRef.current()
+    }
+  }
+
+  // Flush on unmount (route navigation, closing details) and on tab-hide.
+  useEffect(() => {
+    const onHide = () => flushRef.current()
+    window.addEventListener('pagehide', onHide)
+    document.addEventListener('visibilitychange', onHide)
+    return () => {
+      window.removeEventListener('pagehide', onHide)
+      document.removeEventListener('visibilitychange', onHide)
+      flushRef.current()
+    }
+  }, [])
+
+  return { value: local, setLocal, flush: () => flushRef.current(), onBlur, onKeyDownSave }
+}
+
 function ProjectDocumentation({ project, onChange }: { project: Project; onChange: (v: string) => void }) {
   const [tab, setTab] = useState<'write' | 'preview'>('write')
-  const [saved, setSaved] = useState(true)
   const textRef = useRef<HTMLTextAreaElement>(null)
 
-  // Local value to render "unsaved" badge briefly before persisting.
-  const value = project.documentation
+  // Local-first editing: keystrokes update the local buffer only; the store
+  // (and therefore Supabase) is written on a debounce + on blur/Ctrl+S/unmount.
+  const { value, setLocal, flush, onBlur, onKeyDownSave } = useDebouncedTextField(
+    project.documentation,
+    onChange,
+    { delay: 800 },
+  )
+
   const wordCount = useMemo(() => value.trim() ? value.trim().split(/\s+/).length : 0, [value])
   const charCount = value.length
   const readMin = Math.max(1, Math.round(wordCount / 220))
-
-  useEffect(() => { setSaved(false); const t = setTimeout(() => setSaved(true), 400); return () => clearTimeout(t) }, [value])
+  // "Saved" once the local buffer matches what's persisted in the store.
+  const saved = value === project.documentation
 
   /** Insert / wrap text at cursor. */
   const wrap = (before: string, after = before, placeholder = '') => {
@@ -5811,7 +5921,7 @@ function ProjectDocumentation({ project, onChange }: { project: Project; onChang
     const end = el.selectionEnd ?? 0
     const selected = value.slice(start, end) || placeholder
     const next = value.slice(0, start) + before + selected + after + value.slice(end)
-    onChange(next)
+    setLocal(next)
     requestAnimationFrame(() => {
       el.focus()
       const pos = start + before.length + selected.length
@@ -5825,7 +5935,7 @@ function ProjectDocumentation({ project, onChange }: { project: Project; onChang
     const isEmpty = value.slice(lineStart, start).trim() === ''
     const insertion = (isEmpty ? '' : '\n') + prefix + placeholder
     const next = value.slice(0, start) + insertion + value.slice(start)
-    onChange(next)
+    setLocal(next)
     requestAnimationFrame(() => {
       el.focus()
       const pos = start + insertion.length
@@ -5846,7 +5956,7 @@ function ProjectDocumentation({ project, onChange }: { project: Project; onChang
               <button role='tab' aria-selected={tab === 'write'} className={cn('project-doc-tab', tab === 'write' && 'is-active')} onClick={() => setTab('write')}>
                 <Pencil className='h-3.5 w-3.5' /> Write
               </button>
-              <button role='tab' aria-selected={tab === 'preview'} className={cn('project-doc-tab', tab === 'preview' && 'is-active')} onClick={() => setTab('preview')}>
+              <button role='tab' aria-selected={tab === 'preview'} className={cn('project-doc-tab', tab === 'preview' && 'is-active')} onClick={() => { flush(); setTab('preview') }}>
                 <BookOpen className='h-3.5 w-3.5' /> Preview
               </button>
             </div>
@@ -5879,8 +5989,10 @@ function ProjectDocumentation({ project, onChange }: { project: Project; onChang
           <textarea
             ref={textRef}
             value={value}
-            onChange={e => onChange(e.target.value)}
+            onChange={e => setLocal(e.target.value)}
+            onBlur={onBlur}
             onKeyDown={e => {
+              onKeyDownSave(e)
               if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'b') { e.preventDefault(); wrap('**', '**', 'bold') }
               if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'i') { e.preventDefault(); wrap('*', '*', 'italic') }
             }}
@@ -7485,10 +7597,18 @@ function FiltersPanel() {
    Includes inline formatting toolbar, live placeholder, and a
    tasteful "empty" affordance.
    ============================================================ */
-function TaskDescriptionEditor({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+function TaskDescriptionEditor({ value: incoming, onChange }: { value: string; onChange: (v: string) => void }) {
   const [focused, setFocused] = useState(false)
   const [preview, setPreview] = useState(false)
   const ref = useRef<HTMLTextAreaElement>(null)
+
+  // Local-first editing (debounced commit + flush on blur/Ctrl+S/unmount).
+  const { value, setLocal, flush, onBlur: flushOnBlur, onKeyDownSave } = useDebouncedTextField(
+    incoming,
+    onChange,
+    { delay: 700 },
+  )
+
   // Auto-grow height to fit content (max ~ 50vh).
   useEffect(() => {
     const el = ref.current
@@ -7503,7 +7623,7 @@ function TaskDescriptionEditor({ value, onChange }: { value: string; onChange: (
     const end = el.selectionEnd ?? 0
     const selected = value.slice(start, end) || placeholder
     const next = value.slice(0, start) + before + selected + after + value.slice(end)
-    onChange(next)
+    setLocal(next)
     requestAnimationFrame(() => {
       el.focus()
       const pos = start + before.length + selected.length
@@ -7517,7 +7637,7 @@ function TaskDescriptionEditor({ value, onChange }: { value: string; onChange: (
     const isEmpty = value.slice(lineStart, start).trim() === ''
     const insertion = (isEmpty ? '' : '\n') + prefix + placeholder
     const next = value.slice(0, start) + insertion + value.slice(start)
-    onChange(next)
+    setLocal(next)
     requestAnimationFrame(() => { el.focus(); const p = start + insertion.length; el.setSelectionRange(p, p) })
   }
 
@@ -7538,7 +7658,7 @@ function TaskDescriptionEditor({ value, onChange }: { value: string; onChange: (
             <button
               type='button'
               className={cn('task-desc-mode', preview && 'is-active')}
-              onClick={() => setPreview(true)}
+              onClick={() => { flush(); setPreview(true) }}
             >Preview</button>
           </div>
         )}
@@ -7566,10 +7686,11 @@ function TaskDescriptionEditor({ value, onChange }: { value: string; onChange: (
           <textarea
             ref={ref}
             value={value}
-            onChange={e => onChange(e.target.value)}
+            onChange={e => setLocal(e.target.value)}
             onFocus={() => setFocused(true)}
-            onBlur={() => setFocused(false)}
+            onBlur={() => { setFocused(false); flushOnBlur() }}
             onKeyDown={e => {
+              onKeyDownSave(e)
               if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'b') { e.preventDefault(); wrap('**', '**', 'bold') }
               if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'i') { e.preventDefault(); wrap('*', '*', 'italic') }
             }}
@@ -7583,6 +7704,29 @@ function TaskDescriptionEditor({ value, onChange }: { value: string; onChange: (
         </>
       )}
     </div>
+  )
+}
+
+/* Task title — local-first single-line editor. Enter blurs (commits); the
+   debounce + blur/Ctrl+S/unmount flush keep Supabase writes minimal. */
+function TaskTitleInput({ value: incoming, onChange }: { value: string; onChange: (v: string) => void }) {
+  const { value, setLocal, flush, onBlur, onKeyDownSave } = useDebouncedTextField(
+    incoming,
+    onChange,
+    { delay: 700 },
+  )
+  return (
+    <input
+      className='w-full bg-transparent text-lg sm:text-xl font-semibold outline-none task-details-title'
+      value={value}
+      onChange={e => setLocal(e.target.value)}
+      onBlur={onBlur}
+      onKeyDown={e => {
+        onKeyDownSave(e)
+        if (e.key === 'Enter') { e.preventDefault(); flush(); (e.currentTarget as HTMLInputElement).blur() }
+      }}
+      placeholder='Task title'
+    />
   )
 }
 
@@ -7644,8 +7788,13 @@ function TaskDetails() {
         </div>
       </div>
       <div className='p-4 space-y-5 overflow-y-auto h-full scrollbar-thin'>
-        <input className='w-full bg-transparent text-lg sm:text-xl font-semibold outline-none task-details-title' value={task.title} onChange={e => data.updateTask(task.id, { title: e.target.value })} placeholder='Task title' />
+        <TaskTitleInput
+          key={`title-${task.id}`}
+          value={task.title}
+          onChange={(v) => data.updateTask(task.id, { title: v })}
+        />
         <TaskDescriptionEditor
+          key={`desc-${task.id}`}
           value={task.description || ''}
           onChange={(v) => data.updateTask(task.id, { description: v })}
         />
