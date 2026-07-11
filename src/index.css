@@ -1863,6 +1863,22 @@
   z-index: 5;
 }
 
+/* Multi-Select turns every task surface into an action target. Prevent native
+   text highlighting while the mode is active so drag/range/tap selection cannot
+   leave browser selection handles or highlighted task titles behind. */
+.multi-select-active .task-row,
+.multi-select-active .task-row *,
+.multi-select-active .compact-card,
+.multi-select-active .compact-card *,
+.multi-select-active .calendar-event-content,
+.multi-select-active .calendar-event-content *,
+.multi-select-active .cal-m-event,
+.multi-select-active .cal-m-event *{
+  -webkit-user-select: none !important;
+  user-select: none !important;
+  -webkit-touch-callout: none !important;
+}
+
 /* ============================================================
    Global drag lock — while ANY task drag is in progress, disable native
    selection, callouts, and context menus across the whole document so the

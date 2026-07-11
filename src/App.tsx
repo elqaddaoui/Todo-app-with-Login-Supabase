@@ -233,7 +233,7 @@ const useUI = create<{
   rememberLastTaskOptions: boolean;
   // When true, project cards show the project description.
   showProjectDescriptions: boolean;
-  // Master switch for Multi-Select mode (hover checkbox, long-press, shortcuts).
+  // Master switch for Multi-Select mode (desktop shortcuts, mobile long-press).
   multiSelectEnabled: boolean;
   // Visible time range for the Day/Week calendar views.
   calendarStartHour: number;
@@ -328,9 +328,9 @@ function applyLoadedSettings(s: UserSettings) {
  *  wired up; when it returns false the interaction must become inert. */
 const useDndEnabled = () => useUI(s => s.dndEnabled)
 
-/** Master Multi-Select switch. When false the hover selection checkbox is
- *  hidden, the mobile long-press never enters selection mode, and the
- *  Ctrl/Cmd-click + Ctrl/Cmd+A shortcuts are inert. */
+/** Master Multi-Select switch. When false the selection UI is hidden, the
+ *  mobile long-press never enters selection mode, and the Ctrl/Cmd-click +
+ *  Ctrl/Cmd+A shortcuts are inert. */
 const useMultiSelectEnabled = () => useUI(s => s.multiSelectEnabled)
 
 // Apply compact mode class to <html> so CSS can target it globally
@@ -2295,6 +2295,9 @@ function TaskRow({ task, showProject = true, depth = 0 }: { task: Task; showProj
         // Never hijack an in-progress drag.
         if (anyDragActiveRef.current || dragActiveStore.get()) { cancelLongPress(); return }
         longPressRef.current.fired = true
+        // Drop any native highlight that may have begun during the hold before
+        // the active-mode no-select styles were applied.
+        try { window.getSelection?.()?.removeAllRanges() } catch {}
         // Haptic nudge where supported so the mode switch is felt, not guessed.
         try { navigator.vibrate?.(15) } catch {}
         const sel = useSelection.getState()
@@ -2368,29 +2371,28 @@ function TaskRow({ task, showProject = true, depth = 0 }: { task: Task; showProj
         {renaming && <NamePrompt title='Rename task' initial={task.title} label='Title' onClose={() => setRenaming(false)} onSave={(v) => updateTask(task.id, { title: v })} />}
         {confirming && <DeleteConfirm title='Delete task' name={task.title} onClose={() => setConfirming(false)} onConfirm={() => deleteTask(task.id)} />}
         <div className='flex gap-3 items-start'>
-          {/* Multi-select checkbox — visible in selection mode or on hover so
-              the user can start selecting without a mode switch. */}
-          <button
-            type='button'
-            onPointerDown={e => e.stopPropagation()}
-            onClick={e => {
-              e.stopPropagation()
-              if (e.shiftKey && selectionActive) rangeSelect(task.id)
-              else useSelection.getState().toggle(task.id)
-            }}
-            className={cn(
-              'task-select-checkbox mt-0.5 shrink-0 h-4 w-4 rounded border items-center justify-center transition',
-              // Hover-to-reveal only when Multi-Select is enabled AND we're not
-              // already in selection mode. When disabled the checkbox never
-              // shows (no hover reveal), so the row stays clean.
-              !multiSelectEnabled ? 'hidden' : selectionActive ? 'inline-flex' : 'hidden group-hover:inline-flex',
-              isChecked ? 'bg-indigo-500 border-indigo-500 text-white' : 'border-zinc-300 dark:border-zinc-600 text-transparent hover:border-indigo-400',
-            )}
-            aria-label={isChecked ? 'Deselect task' : 'Select task'}
-            aria-pressed={isChecked}
-          >
-            <CheckCircle2 className='h-3 w-3' />
-          </button>
+          {/* The left-side selection control only exists while Multi-Select
+              mode is active. Desktop hover must never reveal it before the
+              user explicitly enters the mode via a keyboard shortcut/menu. */}
+          {multiSelectEnabled && selectionActive && (
+            <button
+              type='button'
+              onPointerDown={e => e.stopPropagation()}
+              onClick={e => {
+                e.stopPropagation()
+                if (e.shiftKey) rangeSelect(task.id)
+                else useSelection.getState().toggle(task.id)
+              }}
+              className={cn(
+                'task-select-checkbox mt-0.5 shrink-0 h-4 w-4 rounded border inline-flex items-center justify-center transition',
+                isChecked ? 'bg-indigo-500 border-indigo-500 text-white' : 'border-zinc-300 dark:border-zinc-600 text-transparent hover:border-indigo-400',
+              )}
+              aria-label={isChecked ? 'Deselect task' : 'Select task'}
+              aria-pressed={isChecked}
+            >
+              <CheckCircle2 className='h-3 w-3' />
+            </button>
+          )}
           {/* Expand toggle for parents with subtasks. Reserves space even when no
               children, so titles align across rows. */}
           <button
@@ -4258,11 +4260,10 @@ function SettingsContent({ compact = false }: { compact?: boolean }) {
             </div>
             <div className='mt-1 text-xs text-zinc-500'>
               {ui.multiSelectEnabled ? 'Enabled' : 'Disabled'} — lets you select
-              multiple tasks at once for bulk actions. On desktop the selection
-              checkbox appears on hover and {typeof navigator !== 'undefined' && /Mac/.test(navigator.platform) ? '⌘' : 'Ctrl'}-click /
-              {typeof navigator !== 'undefined' && /Mac/.test(navigator.platform) ? ' ⌘A' : ' Ctrl+A'} work.
-              On mobile, long-press a task to start selecting. Turn off to hide
-              the selection UI entirely.
+              multiple tasks at once for bulk actions. On desktop, use {typeof navigator !== 'undefined' && /Mac/.test(navigator.platform) ? '⌘' : 'Ctrl'}-click or
+              {typeof navigator !== 'undefined' && /Mac/.test(navigator.platform) ? ' ⌘A' : ' Ctrl+A'} to enter Multi-Select; the left-side selection controls then appear.
+              On mobile, only a long press can start Multi-Select. Turn off to hide
+              the selection UI and disable all activation shortcuts.
             </div>
           </div>
           <Switch
@@ -5387,6 +5388,7 @@ function KanbanTaskCard({ task, onDragStart, onDragEnd }: { task: Task; onDragSt
   const ctx = useContextMenu()
   const isMobileTaskCard = useMedia('(max-width: 768px)')
   const dndEnabled = useDndEnabled()
+  const multiSelectEnabled = useMultiSelectEnabled()
   const [renaming, setRenaming] = useState(false)
   const [confirming, setConfirming] = useState(false)
   const tg = tags.filter(t => task.tags.includes(t.id))
@@ -5411,7 +5413,35 @@ function KanbanTaskCard({ task, onDragStart, onDragEnd }: { task: Task; onDragSt
   }
   const selectionActive = useSelectionActive()
   const isChecked = useIsSelected(task.id)
+  // Kanban cards use the same touch contract as list rows: a normal tap always
+  // opens the task until a deliberate long press activates Multi-Select.
+  const longPressRef = useRef<{ timer: ReturnType<typeof setTimeout> | null; x: number; y: number; fired: boolean }>({ timer: null, x: 0, y: 0, fired: false })
+  const cancelLongPress = () => {
+    if (longPressRef.current.timer) clearTimeout(longPressRef.current.timer)
+    longPressRef.current.timer = null
+  }
+  useEffect(() => () => cancelLongPress(), [])
+  const handleTouchStart = (e: React.TouchEvent) => {
+    if (!isMobileTaskCard || !multiSelectEnabled) return
+    if (e.target instanceof Element && e.target.closest('button, a, input, textarea, select, [role="button"]')) return
+    const touch = e.touches[0]
+    longPressRef.current = { timer: null, x: touch.clientX, y: touch.clientY, fired: false }
+    longPressRef.current.timer = setTimeout(() => {
+      if (!useUI.getState().multiSelectEnabled) return
+      longPressRef.current.fired = true
+      try { window.getSelection?.()?.removeAllRanges() } catch {}
+      try { navigator.vibrate?.(15) } catch {}
+      const selection = useSelection.getState()
+      if (selection.active) selection.toggle(task.id)
+      else selection.enter(task.id)
+    }, 450)
+  }
+  const handleTouchMove = (e: React.TouchEvent) => {
+    const touch = e.touches[0]
+    if (Math.abs(touch.clientX - longPressRef.current.x) > 6 || Math.abs(touch.clientY - longPressRef.current.y) > 6) cancelLongPress()
+  }
   const handleCardClick = () => {
+    if (longPressRef.current.fired) { longPressRef.current.fired = false; return }
     if (selectionActive) { useSelection.getState().toggle(task.id); return }
     setUI({ selected: task.id, details: true })
   }
@@ -5425,6 +5455,10 @@ function KanbanTaskCard({ task, onDragStart, onDragEnd }: { task: Task; onDragSt
       } : undefined}
       onDragEnd={dndEnabled ? onDragEnd : undefined}
       onContextMenu={isMobileTaskCard ? (e) => { e.preventDefault(); e.stopPropagation() } : openMenu}
+      onTouchStart={handleTouchStart}
+      onTouchMove={handleTouchMove}
+      onTouchEnd={cancelLongPress}
+      onTouchCancel={cancelLongPress}
       onClick={handleCardClick}
       className={cn('panel compact-card p-3 hover:shadow-sm transition', dndEnabled && !selectionActive && 'cursor-grab active:cursor-grabbing', isChecked && 'is-multiselected ring-2 ring-indigo-500/50', selectionActive && 'select-none')}
     >
@@ -6737,10 +6771,10 @@ function CalendarPage() {
           <div className='text-xs sm:text-sm font-semibold truncate min-w-0 flex-1 sm:flex-initial'>
             {format(date, view === Views.MONTH ? 'MMMM yyyy' : isMobile ? 'EEE, MMM d' : 'MMM d, yyyy')}
           </div>
-          {/* Multi-select toggle: entering selection mode lets the user tap events
-              to build a selection that the global BulkActionBar then acts on.
-              Hidden entirely when Multi-Select is disabled in App Settings. */}
-          {multiSelectEnabled && (
+          {/* Desktop keeps its explicit selection-mode control. On mobile this
+              control is only an exit affordance: a tap must never activate
+              Multi-Select, which can begin only from a task long press. */}
+          {multiSelectEnabled && (!isMobile || selectionActive) && (
           <button
             className={cn('btn !h-9 !px-3 text-xs sm:text-sm shrink-0', selectionActive ? 'btn-primary' : 'btn-secondary')}
             onClick={() => selectionActive ? useSelection.getState().exit() : useSelection.getState().enter()}
@@ -7988,6 +8022,7 @@ function Layout() {
   const mobile = useMedia('(max-width: 768px)')
   const location = useLocation()
   const navigate = useNavigate()
+  const selectionActive = useSelectionActive()
 
   /* Publish the visible-sidebar width to CSS as `--app-sidebar-w` so the
      command palette / search popup can center itself inside the CONTENT
@@ -8153,7 +8188,7 @@ function Layout() {
   }, [])
 
   return (
-    <div className='h-full flex overflow-hidden'>
+    <div className={cn('h-full flex overflow-hidden', selectionActive && 'multi-select-active')}>
       {!mobile && ui.sidebar && <div style={{ width: ui.sidebarW }} className='border-r shrink-0'><Sidebar /></div>}
       <div className='flex-1 min-w-0 flex flex-col'>
         <Topbar />
