@@ -41,6 +41,12 @@ export type Task = {
 
 export type Bootstrap = { tasks: Task[]; projects: Project[]; tags: Tag[] }
 
+/** Heavy task collections loaded after the core workspace is interactive. */
+export type TaskDetails = Pick<
+  Task,
+  'id' | 'tags' | 'checklist' | 'comments' | 'images' | 'attachments' | 'activity'
+>
+
 /* Per-user preferences that live in the `user_settings` table. Mirrors the
    persisted slice of the `useUI` store. */
 export type UserSettings = {
