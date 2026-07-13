@@ -38,13 +38,13 @@
    ============================================================ */
 import type { RealtimeChannel, RealtimePostgresChangesPayload } from '@supabase/supabase-js'
 import { supabase } from '../supabaseClient'
-import { loadBootstrap, loadSettings } from './load'
-import { assembleTask, rowToProject, rowToTag } from './mappers'
+import { loadBootstrap, loadSettings, loadTaskDetails } from './load'
+import { assembleTask, rowToProject, rowToSettings, rowToTag } from './mappers'
 import type {
   ProjectRow, TagRow, TaskRow, TaskTagRow, ChecklistRow, CommentRow,
   ImageRow, AttachmentRow, ActivityRow,
 } from './mappers'
-import type { Bootstrap, Project, Tag, Task, UserSettings } from './types'
+import type { Bootstrap, Project, Tag, Task, TaskDetails, UserSettings } from './types'
 import { isEcho } from './echo'
 
 /* ---- Store bridge --------------------------------------------------------
@@ -54,8 +54,12 @@ import { isEcho } from './echo'
    apply helper is expected to update the store AND the outbound sync baseline
    together so applied remote rows are never mistaken for local edits. */
 export type RealtimeBridge = {
-  /** Upsert/patch specific tasks by id (re-assembled from DB). */
+  /** Upsert/patch specific fully assembled tasks by id. */
   applyTasks: (tasks: Task[]) => void
+  /** Apply scalar task rows while preserving already-loaded child collections. */
+  applyTaskBases: (tasks: Task[]) => void
+  /** Replace child collections after a deferred/reconnect detail load. */
+  applyTaskDetails: (details: TaskDetails[]) => void
   /** Remove tasks by id (already gone from DB). */
   removeTasks: (ids: string[]) => void
   /** Upsert a single project. */
@@ -230,10 +234,18 @@ function handleEvent(payload: RealtimePostgresChangesPayload<AnyRow>) {
 
   /* ---- Task + task children: mark the owning task dirty ---- */
   if (table === 'tasks' || TASK_CHILD_TABLES.has(table)) {
-    if (table === 'tasks' && type === 'DELETE') {
-      // Base task gone → remove immediately (children cascade in DB).
-      const id = oldRow?.id != null ? String(oldRow.id) : null
-      if (id) { dirtyTaskIds.delete(id); bridge.removeTasks([id]) }
+    if (table === 'tasks') {
+      if (type === 'DELETE') {
+        // Base task gone → remove immediately (children cascade in DB).
+        const id = oldRow?.id != null ? String(oldRow.id) : null
+        if (id) { dirtyTaskIds.delete(id); bridge.removeTasks([id]) }
+      } else if (newRow) {
+        // The event already contains the full base row. Applying it directly
+        // avoids seven redundant SELECTs for ordinary title/status/date edits.
+        bridge.applyTaskBases([
+          assembleTask(newRow as unknown as TaskRow, [], [], [], [], [], []),
+        ])
+      }
       return
     }
     const tid = taskIdFor(table, row)
@@ -263,9 +275,9 @@ function handleEvent(payload: RealtimePostgresChangesPayload<AnyRow>) {
     return
   }
 
-  /* ---- User settings: reload the canonical row (single, tiny query) ---- */
-  if (table === 'user_settings') {
-    void loadSettings().then(s => { if (s && bridge) bridge.applySettings(s) })
+  /* ---- User settings: the realtime payload is already the canonical row ---- */
+  if (table === 'user_settings' && newRow) {
+    bridge.applySettings(rowToSettings(newRow as unknown as Parameters<typeof rowToSettings>[0]))
     return
   }
 }
@@ -286,9 +298,14 @@ function scheduleResync() {
     resyncTimer = null
     if (!bridge) return
     try {
-      const [data, settings] = await Promise.all([loadBootstrap(), loadSettings()])
+      const data = await loadBootstrap()
+      const [details, settings] = await Promise.all([
+        loadTaskDetails(data.tasks.map(task => task.id)),
+        loadSettings(),
+      ])
       if (!bridge) return
       bridge.reconcileAll(data)
+      bridge.applyTaskDetails(details)
       if (settings) bridge.applySettings(settings)
     } catch (e) {
       console.error('[realtime] resync failed', e)

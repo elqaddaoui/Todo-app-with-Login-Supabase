@@ -6,7 +6,7 @@
    never filter by user_id on the client — we just select everything.
    ============================================================ */
 import { supabase } from '../supabaseClient'
-import type { Bootstrap, UserSettings } from './types'
+import type { Bootstrap, TaskDetails, UserSettings } from './types'
 import {
   rowToProject, rowToTag, rowToSettings, assembleTask,
   type TaskRow, type TaskTagRow, type ChecklistRow, type CommentRow,
@@ -14,77 +14,99 @@ import {
   type TagRow, type SettingsRow,
 } from './mappers'
 
-function groupBy<T>(rows: T[], key: (r: T) => string): Map<string, T[]> {
-  const m = new Map<string, T[]>()
-  for (const r of rows) {
-    const k = key(r)
-    const arr = m.get(k)
-    if (arr) arr.push(r)
-    else m.set(k, [r])
+const PROJECT_COLUMNS = 'id,user_id,name,icon,color,favorite,parent_id,description,documentation,order,archived,created_at,updated_at'
+const TAG_COLUMNS = 'id,user_id,name,color,created_at,updated_at'
+const TASK_COLUMNS = 'id,user_id,title,description,status,priority,category,project_id,parent_id,due_date,start_date,time_of_day,estimated_minutes,favorite,archived,order,completed_at,created_at,updated_at'
+const SETTINGS_COLUMNS = 'user_id,theme,sidebar_width,details_width,compact_mode,dnd_enabled,calendar_side_panel,undo_toast_enabled,undo_toast_duration,remember_last_task_options,show_project_descriptions,multi_select_enabled,calendar_start_hour,calendar_end_hour'
+
+/**
+ * Load only the rows required to render the application shell and task lists.
+ * Child collections are intentionally excluded: fetching them used to account
+ * for six of the nine blocking startup requests, including potentially large
+ * activity and base64-image payloads that no initial screen renders.
+ */
+export async function loadBootstrap(): Promise<Bootstrap> {
+  const [projectsRes, tagsRes, tasksRes] = await Promise.all([
+    supabase.from('projects').select(PROJECT_COLUMNS).order('order', { ascending: true }),
+    supabase.from('tags').select(TAG_COLUMNS).order('created_at', { ascending: true }),
+    supabase.from('tasks').select(TASK_COLUMNS).order('order', { ascending: true }),
+  ])
+
+  const firstError = projectsRes.error || tagsRes.error || tasksRes.error
+  if (firstError) throw firstError
+
+  return {
+    projects: (projectsRes.data as unknown as ProjectRow[]).map(rowToProject),
+    tags: (tagsRes.data as unknown as TagRow[]).map(rowToTag),
+    tasks: (tasksRes.data as unknown as TaskRow[]).map(base =>
+      assembleTask(base, [], [], [], [], [], []),
+    ),
   }
-  return m
 }
 
 /**
- * Load the full dataset for the authenticated user. Issues one query per
- * table (8 total) in parallel, then stitches child rows onto their tasks in
- * memory. This keeps the round-trips flat and fast even for large datasets.
+ * Load normalized task child collections after first paint. The result only
+ * contains detail fields, allowing callers to merge it into the latest scalar
+ * task state without clobbering an optimistic edit made during the request.
  */
-export async function loadBootstrap(): Promise<Bootstrap> {
-  const [
-    projectsRes, tagsRes, tasksRes, taskTagsRes,
-    checklistRes, commentsRes, imagesRes, attachmentsRes, activityRes,
-  ] = await Promise.all([
-    supabase.from('projects').select('*').order('order', { ascending: true }),
-    supabase.from('tags').select('*').order('created_at', { ascending: true }),
-    supabase.from('tasks').select('*').order('order', { ascending: true }),
-    supabase.from('task_tags').select('task_id, tag_id, user_id'),
-    supabase.from('task_checklist_items').select('*'),
-    supabase.from('task_comments').select('*'),
-    supabase.from('task_images').select('*'),
-    supabase.from('task_attachments').select('*'),
-    supabase.from('task_activity').select('*'),
-  ])
+export async function loadTaskDetails(taskIds: string[]): Promise<TaskDetails[]> {
+  // A brand-new/empty workspace needs no detail requests at all.
+  if (taskIds.length === 0) return []
 
-  const firstError =
-    projectsRes.error || tagsRes.error || tasksRes.error || taskTagsRes.error ||
-    checklistRes.error || commentsRes.error || imagesRes.error ||
-    attachmentsRes.error || activityRes.error
-  if (firstError) throw firstError
+  // PostgREST embeds all six relationships in one response. This preserves the
+  // normalized schema while replacing six HTTP round-trips with one.
+  const { data, error } = await supabase.from('tasks').select(`
+    id,
+    task_tags(tag_id),
+    task_checklist_items(id,text,done,order,created_at,updated_at),
+    task_comments(id,author_id,author_name,text,created_at,updated_at),
+    task_images(id,url,name,storage_path,order,created_at,updated_at),
+    task_attachments(id,name,size_bytes,storage_path,mime_type,created_at,updated_at),
+    task_activity(id,type,message,actor_id,actor_name,created_at)
+  `)
+  if (error) throw error
 
-  const projects = (projectsRes.data as ProjectRow[]).map(rowToProject)
-  const tags = (tagsRes.data as TagRow[]).map(rowToTag)
+  type DetailRow = {
+    id: string
+    task_tags: Pick<TaskTagRow, 'tag_id'>[]
+    task_checklist_items: Omit<ChecklistRow, 'task_id' | 'user_id'>[]
+    task_comments: Omit<CommentRow, 'task_id' | 'user_id'>[]
+    task_images: Omit<ImageRow, 'task_id' | 'user_id'>[]
+    task_attachments: Omit<AttachmentRow, 'task_id' | 'user_id'>[]
+    task_activity: Omit<ActivityRow, 'task_id' | 'user_id'>[]
+  }
+  const byId = new Map((data as unknown as DetailRow[]).map(row => [row.id, row]))
 
-  const taskRows = tasksRes.data as TaskRow[]
-  const tagsByTask = groupBy(taskTagsRes.data as TaskTagRow[], r => r.task_id)
-  const checklistByTask = groupBy(checklistRes.data as ChecklistRow[], r => r.task_id)
-  const commentsByTask = groupBy(commentsRes.data as CommentRow[], r => r.task_id)
-  const imagesByTask = groupBy(imagesRes.data as ImageRow[], r => r.task_id)
-  const attachmentsByTask = groupBy(attachmentsRes.data as AttachmentRow[], r => r.task_id)
-  const activityByTask = groupBy(activityRes.data as ActivityRow[], r => r.task_id)
-
-  const tasks = taskRows.map(base =>
-    assembleTask(
-      base,
-      (tagsByTask.get(base.id) ?? []).map(r => r.tag_id),
-      checklistByTask.get(base.id) ?? [],
-      commentsByTask.get(base.id) ?? [],
-      imagesByTask.get(base.id) ?? [],
-      attachmentsByTask.get(base.id) ?? [],
-      activityByTask.get(base.id) ?? [],
-    ),
-  )
-
-  return { tasks, projects, tags }
+  return taskIds.map(id => {
+    const row = byId.get(id)
+    return {
+      id,
+      tags: (row?.task_tags ?? []).map(tag => tag.tag_id),
+      checklist: (row?.task_checklist_items ?? [])
+        .slice().sort((a, b) => a.order - b.order)
+        .map(item => ({ id: item.id, text: item.text, done: item.done })),
+      comments: (row?.task_comments ?? [])
+        .slice().sort((a, b) => a.created_at.localeCompare(b.created_at))
+        .map(comment => ({ id: comment.id, author: comment.author_name, text: comment.text, createdAt: comment.created_at })),
+      images: (row?.task_images ?? [])
+        .slice().sort((a, b) => a.order - b.order)
+        .map(image => ({ id: image.id, url: image.url, name: image.name ?? undefined })),
+      attachments: (row?.task_attachments ?? [])
+        .map(attachment => ({ id: attachment.id, name: attachment.name, size: attachment.size_bytes })),
+      activity: (row?.task_activity ?? [])
+        .slice().sort((a, b) => a.created_at.localeCompare(b.created_at))
+        .map(item => ({ id: item.id, type: item.type, message: item.message, createdAt: item.created_at, by: item.actor_name })),
+    }
+  })
 }
 
 /** Load per-user settings, or null if the row hasn't been provisioned yet. */
 export async function loadSettings(): Promise<UserSettings | null> {
   const { data, error } = await supabase
     .from('user_settings')
-    .select('*')
+    .select(SETTINGS_COLUMNS)
     .maybeSingle()
   if (error) throw error
   if (!data) return null
-  return rowToSettings(data as SettingsRow)
+  return rowToSettings(data as unknown as SettingsRow)
 }

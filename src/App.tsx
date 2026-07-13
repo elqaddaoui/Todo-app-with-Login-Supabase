@@ -1,21 +1,20 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { NavLink, Navigate, Route, Routes, useNavigate, useParams, useLocation } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { SignInPage, SignUpPage } from './AuthPages'
 import {
-  useAuthBootstrap, useAuthLoading, useIsAuthenticated, useSession, signOut,
+  useSession, signOut,
   useProfile, type UserProfile,
   updateProfile, updatePassword, updateEmail, sendPasswordReset,
 } from './auth'
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import { newId } from './data/id'
-import { loadBootstrap, loadSettings } from './data/load'
+import { loadBootstrap, loadSettings, loadTaskDetails } from './data/load'
 import { diffAndPersist, setSyncErrorHandler, flushSync, type Snapshot } from './data/sync'
 import { persistSettings, setSettingsUserId } from './data/settings'
 import { startRealtime, stopRealtime, setRealtimeBridge, type RealtimeBridge } from './data/realtime'
 import { resetEcho } from './data/echo'
-import type { UserSettings } from './data/types'
+import type { TaskDetails, UserSettings } from './data/types'
 import { useForm, Controller } from 'react-hook-form'
 import { z } from 'zod'
 import { zodResolver } from '@hookform/resolvers/zod'
@@ -39,6 +38,8 @@ import {
   ZoomIn, ZoomOut, Download, Maximize2
 } from 'lucide-react'
 import { createPortal } from 'react-dom'
+import 'react-big-calendar/lib/css/react-big-calendar.css'
+import 'react-big-calendar/lib/addons/dragAndDrop/styles.css'
 
 /* ============================================================
    Types
@@ -1155,6 +1156,33 @@ const realtimeBridge: RealtimeBridge = {
       return next === s.tasks ? {} : { tasks: next }
     })
   }),
+  applyTaskBases: (tasks) => withRemoteApply(() => {
+    const incoming = new Map(tasks.map(task => [task.id, task]))
+    useData.setState(s => {
+      let changed = false
+      const next = s.tasks.map(task => {
+        const base = incoming.get(task.id)
+        if (!base) return task
+        incoming.delete(task.id)
+        changed = true
+        return {
+          ...base,
+          tags: task.tags,
+          checklist: task.checklist,
+          comments: task.comments,
+          images: task.images,
+          attachments: task.attachments,
+          activity: task.activity,
+        }
+      })
+      if (incoming.size) {
+        changed = true
+        next.push(...incoming.values())
+      }
+      return changed ? { tasks: next } : {}
+    })
+  }),
+  applyTaskDetails: mergeTaskDetails,
   removeTasks: (ids) => withRemoteApply(() => {
     const idSet = new Set(ids)
     useData.setState(s => {
@@ -1201,7 +1229,22 @@ const realtimeBridge: RealtimeBridge = {
   },
   reconcileAll: (b) => withRemoteApply(() => {
     useData.setState(s => {
-      const tasks = upsertById(s.tasks, b.tasks)
+      // Core reconnect rows intentionally omit child collections. Preserve the
+      // current details until the parallel detail snapshot is applied below.
+      const currentTasks = new Map(s.tasks.map(task => [task.id, task]))
+      const coreTasks = b.tasks.map(task => {
+        const current = currentTasks.get(task.id)
+        return current ? {
+          ...task,
+          tags: current.tags,
+          checklist: current.checklist,
+          comments: current.comments,
+          images: current.images,
+          attachments: current.attachments,
+          activity: current.activity,
+        } : task
+      })
+      const tasks = upsertById(s.tasks, coreTasks)
       const projects = upsertById(s.projects, b.projects)
       const tags = upsertById(s.tags, b.tags)
       // Also drop any local rows the server no longer has (missed deletes
@@ -1252,8 +1295,26 @@ function endRealtime() {
  * Once hydrated, the Supabase sync bridge is armed with the loaded data as its
  * baseline so subsequent local edits diff against the correct starting point.
  */
+function mergeTaskDetails(details: TaskDetails[]) {
+  if (details.length === 0) return
+  const byId = new Map(details.map(detail => [detail.id, detail]))
+  withRemoteApply(() => {
+    useData.setState(state => {
+      let changed = false
+      const tasks = state.tasks.map(task => {
+        const detail = byId.get(task.id)
+        if (!detail) return task
+        changed = true
+        return { ...task, ...detail }
+      })
+      return changed ? { tasks } : {}
+    })
+  })
+}
+
 function useBootstrap() {
   const hydrate = useData(s => s.hydrate)
+  const booted = useData(s => s.booted)
   const session = useSession()
   const userId = session?.user.id
 
@@ -1277,6 +1338,26 @@ function useBootstrap() {
     // return an empty dataset and stay empty until the user adds their own data.
     queryFn: (): Promise<Bootstrap> => loadBootstrap(),
   })
+
+  // Task child collections are not required by the shell or list views. Start
+  // their six-table load only after the core snapshot has rendered, then merge
+  // only detail fields so an optimistic scalar edit can never be overwritten.
+  const details = useQuery({
+    queryKey: ['task-details', userId],
+    enabled: !!userId && booted,
+    queryFn: () => loadTaskDetails(useData.getState().tasks.map(task => task.id)),
+    staleTime: 5 * 60 * 1000,
+    gcTime: 5 * 60 * 1000,
+    refetchOnMount: false,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: true,
+    retry: 2,
+  })
+
+  useEffect(() => {
+    if (!details.data || !userId) return
+    mergeTaskDetails(details.data)
+  }, [details.data, userId])
 
   // Track which user the realtime stream is currently armed for so we only
   // (re)start it when the account actually changes — not on every background
@@ -8336,49 +8417,11 @@ function useInstallGlobalAlert() {
   }, [])
 }
 
-/**
- * Route guard for the authenticated application. Redirects to the existing
- * sign-in page when there is no Supabase session, preserving the attempted
- * location so the user returns there after signing in. All protected pages
- * render through this guard, so none are reachable while signed out.
- */
-function RequireAuth({ children }: { children: React.ReactNode }) {
-  const authenticated = useIsAuthenticated()
-  const location = useLocation()
-  if (!authenticated) {
-    return <Navigate to='/signin' replace state={{ from: location }} />
-  }
-  return <>{children}</>
-}
-
-export default function App() {
-  // Bootstrap the Supabase session first so protected routes and the auth
-  // pages both read a settled auth state (avoids flashing sign-in on refresh).
-  useAuthBootstrap()
+export default function AuthenticatedApp() {
   useInstallGlobalAlert()
-  const authLoading = useAuthLoading()
-
-  // Wait for the initial session check before deciding what to render.
-  if (authLoading) {
-    return <div className='h-full flex items-center justify-center text-sm text-zinc-500'>Loading…</div>
-  }
-
   return (
     <ErrorBoundary>
-      <Routes>
-        {/* Public auth pages render standalone — no sidebar/topbar chrome. */}
-        <Route path='/signin' element={<SignInPage />} />
-        <Route path='/signup' element={<SignUpPage />} />
-        {/* Everything else is the protected application. */}
-        <Route
-          path='*'
-          element={
-            <RequireAuth>
-              <AppShell />
-            </RequireAuth>
-          }
-        />
-      </Routes>
+      <AppShell />
       <AlertHost />
       <UndoRedoShortcuts />
       <UndoToastHost />
