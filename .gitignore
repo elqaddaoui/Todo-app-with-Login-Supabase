@@ -3,3 +3,8 @@ dist/
 *.tsbuildinfo
 .DS_Store
 test/.build/
+
+# local visual verification harness (not part of the app build)
+/verify/
+/verify.html
+/board.html

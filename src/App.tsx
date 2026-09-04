@@ -15,12 +15,13 @@ import { persistSettings, setSettingsUserId } from './data/settings'
 import { startRealtime, stopRealtime, setRealtimeBridge, type RealtimeBridge } from './data/realtime'
 import { resetEcho } from './data/echo'
 import type { TaskDetails, UserSettings } from './data/types'
+import ProgressDashboard, { type DashboardActions } from './dashboard/ProgressDashboard'
 import { useForm, Controller } from 'react-hook-form'
 import { z } from 'zod'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { motion, AnimatePresence } from 'framer-motion'
-import { DndContext, DragOverlay, PointerSensor, TouchSensor, closestCenter, useSensor, useSensors, useDraggable, useDroppable, type DragEndEvent, type DragMoveEvent, type DragStartEvent } from '@dnd-kit/core'
-import { SortableContext, arrayMove, useSortable, verticalListSortingStrategy, rectSortingStrategy, type SortingStrategy } from '@dnd-kit/sortable'
+import { DndContext, DragOverlay, KeyboardSensor, PointerSensor, TouchSensor, closestCenter, closestCorners, useSensor, useSensors, useDraggable, useDroppable, type DragEndEvent, type DragMoveEvent, type DragOverEvent, type DragStartEvent } from '@dnd-kit/core'
+import { SortableContext, arrayMove, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy, rectSortingStrategy, type SortingStrategy } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import { Calendar as BigCalendar, dateFnsLocalizer, Views, type View, type Event } from 'react-big-calendar'
 import withDragAndDrop from 'react-big-calendar/lib/addons/dragAndDrop'
@@ -190,6 +191,33 @@ const SORT_OPTIONS: { key: SortKey; label: string }[] = [
   { key: 'title', label: 'Title' },
 ]
 
+/* ------------------------------------------------------------------
+   completedAt ↔ status invariant
+
+   The database enforces `check (completed_at is null or status = 'done')`.
+   Any write that moves a task OUT of 'done' while leaving `completedAt`
+   populated is therefore REJECTED by Postgres — which the app used to
+   surface as the misleading toast "Could not save changes — check your
+   connection", even though the network was perfectly fine. Realtime then
+   re-broadcast the unchanged server row, so the card visibly snapped back
+   and the task looked "not draggable".
+
+   Rather than patch each call site (status is changed from the board, the
+   calendar, the details panel, bulk actions, drag-and-drop…), we normalise
+   the pair in ONE place: any status change keeps completedAt consistent.
+     • → 'done'      : stamp completedAt (preserve an existing stamp)
+     • → other status : clear completedAt
+   ------------------------------------------------------------------ */
+function withCompletionInvariant(prev: Task, patch: Partial<Task>, stamp: string): Partial<Task> {
+  if (patch.status === undefined) return patch
+  // An explicit completedAt in the patch is honoured only when it can satisfy
+  // the constraint; otherwise the invariant wins.
+  if (patch.status === 'done') {
+    return { ...patch, completedAt: patch.completedAt ?? prev.completedAt ?? stamp }
+  }
+  return { ...patch, completedAt: undefined }
+}
+
 /* Walk up the parent chain starting at `startId`. Any ancestor whose status
    is 'done' is flipped back to 'in_progress' — because a completed parent
    shouldn't logically contain an unfinished child. Returns a new tasks array. */
@@ -356,6 +384,12 @@ const useData = create<{
   moveTaskToProject: (id: string, projectId: string | undefined) => void;
   setParent: (id: string, parentId: string | undefined) => void;
   reorder: (ids: string[]) => void;
+  /* ---- Status board (Trello-style) ----
+     Applies a card's new column AND the column's new card order in ONE store
+     transition. Doing it as two calls (updateTask + reorder) makes the sync
+     engine diff twice and briefly renders a state where the card has moved
+     column but not position, which shows up as a visible jump. */
+  moveTaskOnBoard: (id: string, status: Status, columnIds: string[]) => void;
   // ---- Bulk operations (multi-select). All mutate the store in one pass so
   // the outbound sync engine batches them into a single Supabase round-trip. ----
   bulkUpdate: (ids: string[], p: Partial<Task>) => void;
@@ -419,7 +453,14 @@ const useData = create<{
       }
       return { tasks }
     }),
-    updateTask: (id, p) => set(s => ({ tasks: s.tasks.map(t => t.id === id ? { ...t, ...p, updatedAt: nowIso() } : t) })),
+    updateTask: (id, p) => set(s => {
+      const stamp = nowIso()
+      return {
+        tasks: s.tasks.map(t => t.id === id
+          ? { ...t, ...withCompletionInvariant(t, p, stamp), updatedAt: stamp }
+          : t),
+      }
+    }),
     deleteTask: (id) => set(s => ({ tasks: s.tasks.filter(t => t.id !== id && t.parentId !== id) })),
     toggleDone: (id) => set(s => ({
       tasks: s.tasks.map(t => t.id === id
@@ -481,6 +522,42 @@ const useData = create<{
       pos.forEach((p, i) => { if (subset[i]) next[p] = subset[i] })
       return { tasks: next.map((t, i) => ({ ...t, order: i })) }
     }),
+    /* Status board move: re-column a card and rewrite its column's order in a
+       single transition. `columnIds` is the destination column's FINAL top-to-
+       bottom order (already including `id`). */
+    moveTaskOnBoard: (id, status, columnIds) => set(s => {
+      const moved = s.tasks.find(t => t.id === id)
+      if (!moved) return {}
+      const stamp = nowIso()
+
+      // 1. Apply the new status, keeping completedAt legal (see
+      //    withCompletionInvariant — the DB rejects a stale completed_at).
+      let tasks = moved.status === status
+        ? s.tasks
+        : s.tasks.map(t => t.id === id
+          ? { ...t, ...withCompletionInvariant(t, { status }, stamp), updatedAt: stamp }
+          : t)
+
+      // 2. A card dragged out of Done must not leave Done ancestors behind
+      //    (same rule the list view and subtask editors already enforce).
+      if (moved.status === 'done' && status !== 'done') {
+        tasks = propagateUnfinishedUp(tasks, moved.parentId)
+      }
+
+      // 3. Rewrite `order` for the destination column. We reuse the global
+      //    slot-swap trick from `reorder`: the column's cards keep the same
+      //    set of global slots, we just redistribute them in the new order.
+      const sorted = [...tasks].sort((a, b) => a.order - b.order)
+      const byId = new Map(sorted.map(t => [t.id, t]))
+      const wanted = columnIds.map(cid => byId.get(cid)).filter(Boolean) as Task[]
+      const wantedSet = new Set(wanted.map(t => t.id))
+      const slots = sorted.map((t, i) => wantedSet.has(t.id) ? i : -1).filter(i => i >= 0)
+      const next = [...sorted]
+      slots.forEach((slot, i) => { if (wanted[i]) next[slot] = wanted[i] })
+      return {
+        tasks: next.map((t, i) => t.order === i ? t : { ...t, order: i }),
+      }
+    }),
     /* ---- Bulk operations ----
        Each applies a single functional setState so all touched rows change in
        ONE store transition. The Supabase sync subscriber then diffs prev→next
@@ -488,7 +565,11 @@ const useData = create<{
     bulkUpdate: (ids, p) => set(s => {
       const idSet = new Set(ids)
       const stamp = nowIso()
-      return { tasks: s.tasks.map(t => idSet.has(t.id) ? { ...t, ...p, updatedAt: stamp } : t) }
+      return {
+        tasks: s.tasks.map(t => idSet.has(t.id)
+          ? { ...t, ...withCompletionInvariant(t, p, stamp), updatedAt: stamp }
+          : t),
+      }
     }),
     bulkDelete: (ids) => set(s => {
       const idSet = new Set(ids)
@@ -505,7 +586,7 @@ const useData = create<{
       const stamp = nowIso()
       return {
         tasks: s.tasks.map(t => idSet.has(t.id)
-          ? { ...t, status, completedAt: status === 'done' ? (t.completedAt ?? stamp) : undefined, updatedAt: stamp }
+          ? { ...t, ...withCompletionInvariant(t, { status }, stamp), updatedAt: stamp }
           : t),
       }
     }),
@@ -3625,214 +3706,34 @@ function Topbar() {
    Pages
    ============================================================ */
 function Dashboard() {
-  const f = useData(s => s.filters)
+  const booted = useData(s => s.booted)
   const allTasks = useData(s => s.tasks)
-  const tasks = allTasks.filter(t => taskMatches(t, f, { allTasks }))
   const projects = useData(s => s.projects)
-  const compactMode = useUI(s => s.compactMode)
+  const toggleDone = useData(s => s.toggleDone)
+  const setUI = useUI(s => s.set)
+  const navigate = useNavigate()
   const isMobile = useMedia('(max-width: 640px)')
-  const slim = compactMode && isMobile
-  const todays = sortTasks(tasks.filter(t => t.dueDate === todayStr))
-  const due = sortTasks(tasks.filter(overdue))
-  const upcoming = sortTasks(tasks.filter(t => t.dueDate && t.dueDate > todayStr)).slice(0, slim ? 4 : 5)
-  const completed = tasks.filter(t => t.status === 'done').slice(0, slim ? 4 : 5)
-  const week = eachDayOfInterval({ start: startOfWeek(new Date(), { weekStartsOn: 1 }), end: endOfWeek(new Date(), { weekStartsOn: 1 }) })
-    .map(day => ({ day, done: tasks.filter(t => t.completedAt && isWithinInterval(parseISO(t.completedAt), { start: day, end: addDays(day, 1) })).length }))
-  const statCards = [
-    { label: 'Today', value: todays.length, icon: Sun },
-    { label: 'Overdue', value: due.length, icon: AlertCircle },
-    { label: 'Completed', value: completed.length, icon: CheckCircle2 },
-    { label: 'Projects', value: projects.length, icon: FolderKanban },
-  ]
+
+  /* The Progress Dashboard is intentionally driven by the FULL dataset rather
+     than the global task filters: it is an analytics surface with its OWN
+     period + project filters (see the page header). Applying the sidebar
+     filter panel on top would silently distort every metric — e.g. filtering
+     to "high priority" would make project progress look wrong. */
+  const actions = useMemo<DashboardActions>(() => ({
+    navigate: (to: string) => navigate(to),
+    openTask: (id: string) => setUI({ selected: id, details: true }),
+    toggleTask: (id: string) => toggleDone(id),
+    newTask: () => setUI({ quick: true }),
+  }), [navigate, setUI, toggleDone])
 
   return (
-    <div className={cn('overflow-y-auto scrollbar-thin h-full', slim ? 'p-4 space-y-4' : 'p-6 space-y-6')}>
-      <div className='grid grid-cols-2 xl:grid-cols-4 gap-3'>
-        {statCards.map(({ label, value, icon: Icon }, i) => (
-          <Card key={i} className={cn(slim && '!p-3')}>
-            <div className='flex items-center gap-2 text-zinc-500 text-[11px] uppercase tracking-wider'><Icon className='h-4 w-4' />{label}</div>
-            <div className={cn('font-semibold', slim ? 'mt-1 text-xl' : 'mt-2 text-2xl')}>{value}</div>
-          </Card>
-        ))}
-      </div>
-      <div className={cn('grid gap-4 sm:gap-6', slim ? 'grid-cols-1' : 'lg:grid-cols-3')}>
-        <Card className={cn(!slim && 'lg:col-span-2', slim && '!p-3')}>
-          <div className='mb-3 flex items-center justify-between'>
-            <div className='text-xs uppercase tracking-wider text-zinc-500'>Today</div>
-          </div>
-          {due.length > 0 && <div className='mb-3'>
-            <div className='mb-2 text-[11px] uppercase tracking-wider text-rose-600'>Overdue</div>
-            <TaskList tasks={due.slice(0, slim ? 2 : 3)} />
-          </div>}
-          <TaskList tasks={todays.slice(0, slim ? 4 : 6)} empty='Nothing for today' emptyDesc='Enjoy a quieter day or plan ahead.' />
-        </Card>
-        <Card className={cn(slim && '!p-3')}>
-          <div className='text-xs uppercase tracking-wider text-zinc-500 mb-2'>Weekly progress</div>
-          <WeeklyProgress data={week} />
-        </Card>
-        <Card className={cn(slim && '!p-3')}>
-          <div className='text-xs uppercase tracking-wider text-zinc-500 mb-3'>Upcoming</div>
-          <TaskList tasks={upcoming} empty='Nothing scheduled' emptyDesc='Your week is clear.' />
-        </Card>
-        <Card className={cn(slim && '!p-3')}>
-          <div className='text-xs uppercase tracking-wider text-zinc-500 mb-3'>Project progress</div>
-          <div className={cn('space-y-3', slim && 'space-y-2')}>
-            {projects.map(p => {
-              const items = tasks.filter(t => t.projectId === p.id && !t.archived)
-              const done = items.filter(t => t.status === 'done').length
-              const pct = items.length ? Math.round(done / items.length * 100) : 0
-              return (
-                <NavLink key={p.id} to={`/projects/${p.id}`} className='block'>
-                  <div className='flex items-center gap-2 mb-1'>
-                    <span className='h-2 w-2 rounded-full' style={{ background: p.color }} />
-                    <span className='text-sm flex-1 truncate'>{p.name}</span>
-                    <span className='text-[10px] text-zinc-500'>{slim ? `${done}/${items.length || 0}` : `${pct}%`}</span>
-                  </div>
-                  <div className='h-1.5 rounded-full bg-zinc-100 dark:bg-zinc-800 overflow-hidden'>
-                    <div className='h-full' style={{ width: `${pct}%`, background: p.color }} />
-                  </div>
-                </NavLink>
-              )
-            })}
-          </div>
-        </Card>
-        <Card className={cn(slim && '!p-3')}>
-          <div className='text-xs uppercase tracking-wider text-zinc-500 mb-3'>Recently completed</div>
-          <div className='space-y-2'>
-            {completed.length === 0 && <div className='text-xs text-zinc-500'>Nothing completed yet.</div>}
-            {completed.map(t => (
-              <div key={t.id} className='flex items-center gap-2 text-sm'>
-                <CheckCircle2 className='h-4 w-4 text-emerald-500 shrink-0' />
-                <span className='line-through text-zinc-500 truncate'>{t.title}</span>
-              </div>
-            ))}
-          </div>
-        </Card>
-      </div>
-    </div>
-  )
-}
-
-/* ============================================================
-   WeeklyProgress — brand new SVG-driven chart.
-   Replaces the previous bar chart that animated `height: '%'` with
-   framer-motion (which fails to interpolate string units, producing
-   invisible bars). This one is deterministic: it computes pixel
-   coordinates from a fixed viewBox, draws an area + line + per-day
-   bars + today marker, and is fully self-contained.
-   ============================================================ */
-function WeeklyProgress({ data }: { data: { day: Date; done: number }[] }) {
-  // Stable viewBox math so the SVG looks crisp at any size.
-  const W = 320, H = 140, PAD_X = 12, PAD_Y = 18
-  const innerW = W - PAD_X * 2
-  const innerH = H - PAD_Y * 2
-  const n = Math.max(1, data.length)
-  const max = Math.max(1, ...data.map(d => d.done))
-  const step = innerW / (n - 1 || 1)
-  const barW = Math.min(28, step * 0.55)
-
-  const xFor = (i: number) => PAD_X + i * step
-  const yFor = (v: number) => PAD_Y + innerH - (v / max) * innerH
-
-  const points = data.map((d, i) => ({ x: xFor(i), y: yFor(d.done), v: d.done, day: d.day, i }))
-
-  // Smoothed line using a simple cubic curve between points.
-  const linePath = points.length
-    ? points.map((p, i) => {
-        if (i === 0) return `M ${p.x.toFixed(1)} ${p.y.toFixed(1)}`
-        const prev = points[i - 1]
-        const cx = ((prev.x + p.x) / 2).toFixed(1)
-        return `C ${cx} ${prev.y.toFixed(1)} ${cx} ${p.y.toFixed(1)} ${p.x.toFixed(1)} ${p.y.toFixed(1)}`
-      }).join(' ')
-    : ''
-  // Same shape, closed at the bottom to form the area fill.
-  const areaPath = linePath ? `${linePath} L ${PAD_X + innerW} ${PAD_Y + innerH} L ${PAD_X} ${PAD_Y + innerH} Z` : ''
-
-  // Horizontal grid lines (4 ticks).
-  const ticks = [0, 0.33, 0.66, 1]
-
-  const todayIndex = data.findIndex(d => isToday(d.day))
-  const total = data.reduce((s, d) => s + d.done, 0)
-  const bestDay = data.reduce((acc, d) => (d.done > acc.done ? d : acc), data[0] || { day: new Date(), done: 0 })
-
-  return (
-    <div className='weekly-progress'>
-      <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio='none' role='img' aria-label='Weekly progress chart'>
-        <defs>
-          <linearGradient id='wpAreaGradient' x1='0' x2='0' y1='0' y2='1'>
-            <stop offset='0%' stopColor='hsl(var(--selected-border))' stopOpacity='0.35' />
-            <stop offset='100%' stopColor='hsl(var(--selected-border))' stopOpacity='0.02' />
-          </linearGradient>
-        </defs>
-
-        {/* Grid */}
-        <g className='wp-grid'>
-          {ticks.map((t, i) => {
-            const y = PAD_Y + innerH * t
-            return <line key={i} x1={PAD_X} x2={W - PAD_X} y1={y} y2={y} />
-          })}
-        </g>
-
-        {/* Per-day bars sit behind the curve to give the chart depth. */}
-        <g>
-          {points.map(p => {
-            const baseY = PAD_Y + innerH
-            const barH = Math.max(2, baseY - p.y)
-            return (
-              <rect
-                key={p.i}
-                className={cn('wp-bar', p.i === todayIndex && 'is-today')}
-                x={p.x - barW / 2}
-                y={baseY - barH}
-                width={barW}
-                height={barH}
-                rx={6}
-              >
-                <title>{`${format(p.day, 'EEEE, MMM d')} — ${p.v} completed`}</title>
-              </rect>
-            )
-          })}
-        </g>
-
-        {/* Area + line + points on top */}
-        <path className='wp-area' d={areaPath} />
-        <path className='wp-line' d={linePath} />
-        <g>
-          {points.map(p => (
-            <circle key={p.i} className={cn('wp-point', p.i === todayIndex && 'is-today')} cx={p.x} cy={p.y} r={p.i === todayIndex ? 4 : 3} />
-          ))}
-        </g>
-
-        {/* Value labels for non-zero days */}
-        <g>
-          {points.map(p => p.v > 0 ? (
-            <text key={p.i} className='wp-value' x={p.x} y={Math.max(PAD_Y + 8, p.y - 8)} textAnchor='middle'>{p.v}</text>
-          ) : null)}
-        </g>
-
-        {/* Day labels along the bottom */}
-        <g>
-          {points.map(p => (
-            <text key={p.i} className={cn('wp-label', p.i === todayIndex && 'is-today')} x={p.x} y={H - 4} textAnchor='middle'>
-              {format(p.day, 'EEEEE')}
-            </text>
-          ))}
-        </g>
-      </svg>
-
-      <div className='weekly-progress-summary'>
-        <span className='wp-total'>
-          <b>{total}</b>
-          <span>completed this week</span>
-        </span>
-        {total > 0 && (
-          <span className='wp-pill'>
-            <Sparkles className='h-3 w-3' />
-            Best: {format(bestDay.day, 'EEE')} · {bestDay.done}
-          </span>
-        )}
-      </div>
-    </div>
+    <ProgressDashboard
+      tasks={allTasks}
+      projects={projects}
+      loading={!booted}
+      actions={actions}
+      isMobile={isMobile}
+    />
   )
 }
 
@@ -5457,7 +5358,48 @@ function ProjectsPage() {
   )
 }
 
-function KanbanTaskCard({ task, onDragStart, onDragEnd }: { task: Task; onDragStart: (id: string) => void; onDragEnd: () => void }) {
+/* ============================================================
+   Status board card (Trello-style)
+   ------------------------------------------------------------
+   Two components share one body:
+     • KanbanTaskCard  — the real, sortable card in a column.
+     • KanbanCardBody  — the same markup, rendered again inside the
+       DragOverlay so the card visibly follows the cursor across
+       columns instead of being clipped by the column's scroll box.
+
+   Dragging uses @dnd-kit (like every other drag surface in the app)
+   rather than the HTML5 drag API. HTML5 drag can't express "reorder
+   within a column", gives no usable drag image inside a scroll
+   container, and is unreliable on touch — which is why the board
+   previously supported column changes only.
+   ============================================================ */
+function KanbanCardBody({ task, dragging }: { task: Task; dragging?: boolean }) {
+  const tags = useData(s => s.tags)
+  const allTasks = useData(s => s.tasks)
+  const tg = tags.filter(t => task.tags.includes(t.id))
+  const subCount = allTasks.filter(t => t.parentId === task.id && !t.archived).length
+  const subDone = allTasks.filter(t => t.parentId === task.id && t.status === 'done' && !t.archived).length
+  return (
+    <div className={cn('panel compact-card p-3 kanban-card', dragging && 'kanban-card-overlay')}>
+      <div className='flex items-start gap-2'>
+        <div className='text-sm font-medium flex-1'>{task.title}</div>
+        {subCount > 0 && (
+          <span className='badge bg-black/5 dark:bg-white/5 text-[10px]'>
+            <ListChecks className='h-3 w-3' /> {subDone}/{subCount}
+          </span>
+        )}
+        {task.favorite && <Star className='h-4 w-4 fill-amber-400 text-amber-400' />}
+      </div>
+      <div className='compact-row-meta mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-zinc-500'>
+        {task.dueDate && <span className={cn('compact-meta compact-meta-date inline-flex items-center gap-1', overdue(task) && 'text-rose-600')}><CalendarDays className='h-3 w-3' />{format(parseISO(task.dueDate), 'MMM d')}</span>}
+        {priorityBadge(task.priority, 'compact-meta compact-meta-priority')}
+        {tg.slice(0, 2).map(t => <span key={t.id} className='badge bg-black/5 dark:bg-white/5 compact-meta compact-meta-tag'><span className='h-1.5 w-1.5 rounded-full' style={{ background: t.color }} />{t.name}</span>)}
+      </div>
+    </div>
+  )
+}
+
+function KanbanTaskCard({ task }: { task: Task }) {
   const setUI = useUI(s => s.set)
   const toggleFav = useData(s => s.toggleFav)
   const projects = useData(s => s.projects)
@@ -5526,22 +5468,29 @@ function KanbanTaskCard({ task, onDragStart, onDragEnd }: { task: Task; onDragSt
     if (selectionActive) { useSelection.getState().toggle(task.id); return }
     setUI({ selected: task.id, details: true })
   }
+  /* Drag is disabled while a multi-select is active so the long-press
+     selection gesture and the drag gesture can't fight over the pointer. */
+  const canDrag = dndEnabled && !selectionActive
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
+    id: task.id,
+    disabled: !canDrag,
+    // `data` lets the board's drag handlers know which column a card came
+    // from without searching the whole task list on every pointer move.
+    data: { type: 'card', taskId: task.id, status: task.status },
+  })
   return (
     <div
-      draggable={dndEnabled && !selectionActive}
-      onDragStart={dndEnabled ? (e) => {
-        e.dataTransfer.setData('text/plain', task.id)
-        e.dataTransfer.effectAllowed = 'move'
-        onDragStart(task.id)
-      } : undefined}
-      onDragEnd={dndEnabled ? onDragEnd : undefined}
+      ref={setNodeRef}
+      style={{ transform: CSS.Transform.toString(transform), transition }}
+      {...(canDrag ? attributes : {})}
+      {...(canDrag ? listeners : {})}
       onContextMenu={isMobileTaskCard ? (e) => { e.preventDefault(); e.stopPropagation() } : openMenu}
       onTouchStart={handleTouchStart}
       onTouchMove={handleTouchMove}
       onTouchEnd={cancelLongPress}
       onTouchCancel={cancelLongPress}
       onClick={handleCardClick}
-      className={cn('panel compact-card p-3 hover:shadow-sm transition', dndEnabled && !selectionActive && 'cursor-grab active:cursor-grabbing', isChecked && 'is-multiselected ring-2 ring-indigo-500/50', selectionActive && 'select-none')}
+      className={cn('panel compact-card p-3 hover:shadow-sm transition kanban-card', canDrag && 'cursor-grab active:cursor-grabbing', isChecked && 'is-multiselected ring-2 ring-indigo-500/50', selectionActive && 'select-none', isDragging && 'kanban-card-dragging')}
     >
       {ctx.node}
       {renaming && <NamePrompt title='Rename task' initial={task.title} label='Title' onClose={() => setRenaming(false)} onSave={(v) => updateTask(task.id, { title: v })} />}
@@ -5601,45 +5550,46 @@ function KanbanTaskCard({ task, onDragStart, onDragEnd }: { task: Task; onDragSt
 }
 
 /* ============================================================
-   useDragAutoScroll — ensures that when the user drags a kanban
-   card near the top/bottom of a scrollable container, the container
-   smoothly scrolls so columns hidden below/above the viewport become
-   reachable. Listens at window-level on `dragover` so it works with
-   the native HTML5 drag API (which is what KanbanTaskCard uses).
+   useBoardAutoScroll — keeps off-screen board columns reachable
+   ------------------------------------------------------------
+   The Trello-style board scrolls HORIZONTALLY, so a card dragged
+   toward the left/right edge must pull the column strip along or
+   the far columns can never be dropped onto.
+
+   This listens on `pointermove` (not the HTML5 `dragover`, which
+   @dnd-kit never fires) and eases the scroll speed by how close the
+   pointer is to the edge. @dnd-kit already auto-scrolls the nearest
+   VERTICAL scroll container, so we only drive the X axis here.
    ============================================================ */
-function useDragAutoScroll(containerRef: React.RefObject<HTMLElement | null>, active: boolean) {
+function useBoardAutoScroll(containerRef: React.RefObject<HTMLElement | null>, active: boolean) {
   useEffect(() => {
     if (!active) return
     const el = containerRef.current
     if (!el) return
 
-    const EDGE = 90       // px from edge that triggers scroll
-    const MAX_SPEED = 22  // px per frame at the very edge
+    const EDGE = 110      // px from edge that triggers scroll
+    const MAX_SPEED = 24  // px per frame at the very edge
     let raf = 0
     let velocity = 0
 
     const tick = () => {
       if (Math.abs(velocity) < 0.5) { raf = 0; return }
-      el.scrollTop += velocity
+      el.scrollLeft += velocity
       raf = requestAnimationFrame(tick)
     }
 
-    const onDragOver = (e: DragEvent) => {
+    const onPointerMove = (e: PointerEvent) => {
       const rect = el.getBoundingClientRect()
-      const y = e.clientY
-      // Only react when the pointer is over the container (or just outside it).
-      if (e.clientX < rect.left - 40 || e.clientX > rect.right + 40) { velocity = 0; return }
+      // Ignore pointers far above/below the strip (e.g. over the doc pane).
+      if (e.clientY < rect.top - 60 || e.clientY > rect.bottom + 60) { velocity = 0; return }
 
-      const fromTop = y - rect.top
-      const fromBot = rect.bottom - y
+      const fromLeft = e.clientX - rect.left
+      const fromRight = rect.right - e.clientX
 
-      if (fromTop < EDGE && fromTop > -EDGE) {
-        // ease: closer to edge → faster scroll
-        const factor = Math.min(1, (EDGE - fromTop) / EDGE)
-        velocity = -MAX_SPEED * factor
-      } else if (fromBot < EDGE && fromBot > -EDGE) {
-        const factor = Math.min(1, (EDGE - fromBot) / EDGE)
-        velocity = MAX_SPEED * factor
+      if (fromLeft < EDGE) {
+        velocity = -MAX_SPEED * Math.min(1, (EDGE - fromLeft) / EDGE)
+      } else if (fromRight < EDGE) {
+        velocity = MAX_SPEED * Math.min(1, (EDGE - fromRight) / EDGE)
       } else {
         velocity = 0
       }
@@ -5648,16 +5598,66 @@ function useDragAutoScroll(containerRef: React.RefObject<HTMLElement | null>, ac
 
     const stop = () => { velocity = 0; if (raf) { cancelAnimationFrame(raf); raf = 0 } }
 
-    window.addEventListener('dragover', onDragOver)
-    window.addEventListener('dragend', stop)
-    window.addEventListener('drop', stop)
+    window.addEventListener('pointermove', onPointerMove)
+    window.addEventListener('pointerup', stop)
+    window.addEventListener('pointercancel', stop)
     return () => {
-      window.removeEventListener('dragover', onDragOver)
-      window.removeEventListener('dragend', stop)
-      window.removeEventListener('drop', stop)
+      window.removeEventListener('pointermove', onPointerMove)
+      window.removeEventListener('pointerup', stop)
+      window.removeEventListener('pointercancel', stop)
       stop()
     }
   }, [containerRef, active])
+}
+
+/* One Trello column. Registers itself as a droppable so a card can be
+   dropped on an EMPTY column (with no cards there is no sortable item for
+   the collision detector to hit, which is the classic "can't move anything
+   into Done" kanban bug). */
+function KanbanColumn({
+  status, label, tasks, isOver, onAdd,
+}: {
+  status: Status
+  label: string
+  tasks: Task[]
+  isOver: boolean
+  onAdd: (status: Status) => void
+}) {
+  const { setNodeRef } = useDroppable({ id: `col:${status}`, data: { type: 'column', status } })
+  const meta = statusMeta[status]
+  const ids = useMemo(() => tasks.map(t => t.id), [tasks])
+  return (
+    <section
+      className={cn('kanban-column', isOver && 'is-over')}
+      aria-label={`${label}, ${tasks.length} ${tasks.length === 1 ? 'task' : 'tasks'}`}
+    >
+      <header className='kanban-column-header'>
+        <span className={cn('h-2 w-2 rounded-full shrink-0', meta.dot)} aria-hidden='true' />
+        <h3 className='kanban-column-title'>{label}</h3>
+        <span className='kanban-column-count'>{tasks.length}</span>
+        <button
+          type='button'
+          className='kanban-column-add'
+          onClick={() => onAdd(status)}
+          title={`Add a task to ${label}`}
+          aria-label={`Add a task to ${label}`}
+        >
+          <Plus className='h-4 w-4' />
+        </button>
+      </header>
+      <div ref={setNodeRef} className='kanban-column-body scrollbar-thin'>
+        <SortableContext items={ids} strategy={verticalListSortingStrategy}>
+          {tasks.map(t => <KanbanTaskCard key={t.id} task={t} />)}
+        </SortableContext>
+        {tasks.length === 0 && (
+          <div className={cn('kanban-empty', isOver && 'is-over')}>
+            <div className='font-medium text-zinc-500'>{isOver ? 'Drop to move here' : 'No tasks'}</div>
+            <div className='mt-1 text-[11px]'>Drag a card here.</div>
+          </div>
+        )}
+      </div>
+    </section>
+  )
 }
 
 function ProjectPage() {
@@ -5665,8 +5665,12 @@ function ProjectPage() {
   const data = useData()
   const p = data.projects.find(x => x.id === id)
   const [previewMode, setPreviewMode] = useState<'list' | 'status'>('status')
+  // Board drag state: the card being dragged, and the column the pointer is
+  // currently over (drives the drop highlight).
   const [draggingId, setDraggingId] = useState<string | null>(null)
   const [overCol, setOverCol] = useState<Status | null>(null)
+  const dndEnabled = useDndEnabled()
+  const [adding, setAdding] = useState<Status | null>(null)
 
   // On mobile (< lg breakpoint) we render the Documentation panel as a
   // collapsible footer that's COLLAPSED BY DEFAULT, so it never covers the
@@ -5677,15 +5681,36 @@ function ProjectPage() {
   // Reset to collapsed whenever the user switches viewport or project.
   useEffect(() => { setDocOpen(false) }, [isMobileLayout, id])
 
-  // Auto-scroll the board container when dragging near top/bottom edges.
-  // Without this, status columns hidden below the viewport were unreachable.
-  const scrollRef = useRef<HTMLDivElement>(null)
-  useDragAutoScroll(scrollRef, !!draggingId)
+  // Auto-scroll the horizontal column strip when a card is dragged near the
+  // left/right edge, so off-screen columns stay reachable.
+  const boardRef = useRef<HTMLDivElement>(null)
+  useBoardAutoScroll(boardRef, !!draggingId)
+
+  const sensors = useSensors(
+    // A short travel threshold keeps plain clicks (open task details) working.
+    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+    // Touch needs a hold, otherwise every vertical swipe would grab a card
+    // instead of scrolling the column.
+    useSensor(TouchSensor, { activationConstraint: { delay: 260, tolerance: 6 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  )
 
   if (!p) return <Navigate to='/projects' replace />
 
-  const projectTasks = sortTasks(data.tasks.filter(t => t.projectId === p.id && taskMatches(t, data.filters, { allTasks: data.tasks })))
-  const topLevelTasks = projectTasks.filter(t => !t.parentId)
+  const visibleTasks = data.tasks.filter(t => t.projectId === p.id && taskMatches(t, data.filters, { allTasks: data.tasks }))
+  const projectTasks = sortTasks(visibleTasks)
+  /* Every task in the project is a card — INCLUDING subtasks. The old board
+     showed only top-level tasks, so a subtask could never be moved on the
+     board at all (the user reported this as tasks that "don't work"). A
+     subtask is still a real unit of work with its own status, so it gets its
+     own card; the parent card shows the n/m roll-up.
+
+     Cards are ordered by `order`, NOT by the global sort used for the list
+     view. The default list sort is "recently updated", which would re-sort a
+     card to the top of its column the instant you dropped it — making manual
+     ordering impossible to keep. A board's vertical order IS the user's
+     priority, exactly like Trello, so it must be the persisted `order`. */
+  const boardTasks = [...visibleTasks].sort((a, b) => a.order - b.order)
   const kanbanGroups: { key: Status; label: string }[] = [
     { key: 'not_started', label: 'Not Started' },
     { key: 'planned', label: 'Planned' },
@@ -5693,19 +5718,71 @@ function ProjectPage() {
     { key: 'waiting', label: 'Waiting' },
     { key: 'blocked', label: 'Blocked' },
     { key: 'done', label: 'Done' },
+    { key: 'cancelled', label: 'Cancelled' },
   ]
+  const columns = kanbanGroups.map(g => ({ ...g, items: boardTasks.filter(t => t.status === g.key) }))
+  const byId = new Map(boardTasks.map(t => [t.id, t]))
+  const draggingTask = draggingId ? byId.get(draggingId) ?? null : null
 
-  const handleDrop = (status: Status) => (e: React.DragEvent) => {
-    e.preventDefault()
-    const id = e.dataTransfer.getData('text/plain') || draggingId
-    if (id) data.updateTask(id, { status })
+  /* Resolve whatever @dnd-kit reports we're over into a target column.
+     `over` is either a column droppable (`col:<status>`) when hovering empty
+     space, or another card — in which case we take that card's column. */
+  const columnOf = (overId: string | null): Status | null => {
+    if (!overId) return null
+    if (overId.startsWith('col:')) return overId.slice(4) as Status
+    return byId.get(overId)?.status ?? null
+  }
+
+  const onDragStart = (e: DragStartEvent) => {
+    setDraggingId(String(e.active.id))
+    setOverCol(byId.get(String(e.active.id))?.status ?? null)
+  }
+
+  const onDragOver = (e: DragOverEvent) => {
+    setOverCol(columnOf(e.over ? String(e.over.id) : null))
+  }
+
+  const onDragEnd = (e: DragEndEvent) => {
+    const activeId = String(e.active.id)
     setDraggingId(null)
     setOverCol(null)
+    const task = byId.get(activeId)
+    const target = columnOf(e.over ? String(e.over.id) : null)
+    if (!task || !target) return
+
+    // Destination column WITHOUT the dragged card, so we can splice it back in
+    // at the right index whether it came from this column or another one.
+    const destination = columns.find(c => c.key === target)?.items ?? []
+    const rest = destination.filter(t => t.id !== activeId).map(t => t.id)
+
+    // Where to insert: at the hovered card's slot, or at the end when the drop
+    // landed on the column's empty space / its own header area.
+    const overId = e.over ? String(e.over.id) : ''
+    const at = overId.startsWith('col:') ? rest.length : Math.max(0, rest.indexOf(overId))
+    const nextIds = [...rest.slice(0, at), activeId, ...rest.slice(at)]
+
+    // Nothing actually changed — skip the write so we don't churn the sync
+    // queue (and don't bump updatedAt) on a click-sized drag.
+    const unchanged = task.status === target
+      && destination.length === nextIds.length
+      && destination.every((t, i) => t.id === nextIds[i])
+    if (unchanged) return
+
+    data.moveTaskOnBoard(activeId, target, nextIds)
   }
 
   return (
     <div className={cn('project-page-layout grid lg:grid-cols-[minmax(0,1fr)_440px] h-full', isMobileLayout && 'is-mobile', isMobileLayout && docOpen && 'doc-open')}>
-      <div ref={scrollRef} className='project-page-main border-b lg:border-b-0 lg:border-r overflow-y-auto p-4 sm:p-6 space-y-4 scrollbar-thin relative'>
+      {/* In board mode the pane itself must NOT scroll vertically: the board
+          fills the remaining height and each column scrolls on its own, which
+          is what keeps every column header visible (Trello behaviour). The
+          list view keeps the original single scrolling pane. */}
+      <div className={cn(
+        'project-page-main border-b lg:border-b-0 lg:border-r p-4 sm:p-6 scrollbar-thin relative',
+        previewMode === 'status'
+          ? 'flex flex-col gap-4 min-h-0 overflow-hidden'
+          : 'overflow-y-auto space-y-4',
+      )}>
         <div className='flex items-center gap-3'>
           <IconProject name={p.icon} color={p.color} />
           <div className='min-w-0'>
@@ -5737,36 +5814,47 @@ function ProjectPage() {
         {previewMode === 'list' ? (
           <TaskList tasks={projectTasks} showProject={false} empty='No tasks yet' emptyDesc='Tasks added to this project will appear here.' />
         ) : (
-          <div className='space-y-4'>
-            {kanbanGroups.map(g => {
-              const items = topLevelTasks.filter(t => t.status === g.key)
-              const isOver = overCol === g.key
-              return (
-                <div key={g.key}
-                  onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; if (overCol !== g.key) setOverCol(g.key) }}
-                  onDragLeave={() => setOverCol(s => s === g.key ? null : s)}
-                  onDrop={handleDrop(g.key)}
-                >
-                  <div className='mb-2 flex items-center justify-between'>
-                    <div className='text-[11px] uppercase tracking-wider text-zinc-500 flex items-center gap-2'>
-                      <span className={cn('h-1.5 w-1.5 rounded-full', statusMeta[g.key].dot)} />
-                      {g.label}
-                      <span className='text-zinc-400'>{items.length}</span>
-                    </div>
-                  </div>
-                  {items.length === 0
-                    ? <div className={cn('kanban-empty', isOver && 'bg-indigo-500/10 border-indigo-500/40')}>
-                        <div className='font-medium text-zinc-500'>{isOver ? 'Drop to move here' : 'No tasks yet'}</div>
-                        <div className='mt-1 text-[11px]'>Drag a task here from another column.</div>
-                      </div>
-                    : <div className={cn('space-y-2 rounded-xl transition', isOver && 'bg-indigo-500/5 ring-2 ring-indigo-500/30 p-1')}>
-                        {items.map(t => <KanbanTaskCard key={t.id} task={t} onDragStart={setDraggingId} onDragEnd={() => { setDraggingId(null); setOverCol(null) }} />)}
-                      </div>
-                  }
-                </div>
-              )
-            })}
-          </div>
+          /* A single DndContext spans every column so a card can be dragged
+             from any column into any other. `closestCorners` beats
+             `closestCenter` for columns of unequal height — it compares the
+             card's corners to each droppable, which is what makes dropping
+             near the top or bottom of a tall column feel accurate. */
+          <DndContext
+            sensors={sensors}
+            collisionDetection={closestCorners}
+            onDragStart={onDragStart}
+            onDragOver={onDragOver}
+            onDragEnd={onDragEnd}
+            onDragCancel={() => { setDraggingId(null); setOverCol(null) }}
+          >
+            <div ref={boardRef} className='kanban-board scrollbar-thin'>
+              {columns.map(c => (
+                <KanbanColumn
+                  key={c.key}
+                  status={c.key}
+                  label={c.label}
+                  tasks={c.items}
+                  isOver={overCol === c.key}
+                  onAdd={setAdding}
+                />
+              ))}
+            </div>
+            {/* The dragged card is re-rendered in an overlay so it floats
+                ABOVE the columns. Without this it stays inside its column's
+                scroll box and gets clipped the moment it crosses the edge. */}
+            <DragOverlay dropAnimation={null}>
+              {draggingTask ? <KanbanCardBody task={draggingTask} dragging /> : null}
+            </DragOverlay>
+          </DndContext>
+        )}
+        {adding && (
+          <NamePrompt
+            title={`New task in ${statusMeta[adding].label}`}
+            initial=''
+            label='Task title'
+            onClose={() => setAdding(null)}
+            onSave={(v) => data.addTask({ title: v, projectId: p.id, status: adding })}
+          />
         )}
       </div>
       <div
@@ -6634,18 +6722,27 @@ function CalendarPage() {
     setTimeout(() => setUI({ selected: task.id, details: true }), 80)
   }, [calendarTarget, taskMap, setUI])
 
-  const syncTaskToSlot = (task: Task, start: Date, end: Date, allDay?: boolean) => {
+  const syncTaskToSlot = (task: Task, start: Date, end: Date, allDay?: boolean, opts?: { dateOnly?: boolean }) => {
     // For an all-day drop we keep the task's own estimated duration (an all-day
     // slot spans the whole day, so the raw start→end diff isn't meaningful).
-    const minutes = allDay
+    const minutes = allDay || opts?.dateOnly
       ? (task.estimatedMinutes || 60)
       : Math.max(30, Math.round((end.getTime() - start.getTime()) / 60000) || task.estimatedMinutes || 60)
-    updateTask(task.id, {
+
+    /* Month rows and the all-day header are DATE-granular: react-big-calendar
+       reports the drop at midnight because the row has no notion of hours.
+       Writing `format(start,'HH:mm')` there silently re-timed every task to
+       00:00 (and a 00:00 task then sits outside a workday time-window like
+       08:00–20:00, so it vanished from Week view and looked undraggable).
+       For a date-only drop we move the DAY and keep the existing time. */
+    const patch: Partial<Task> = {
       dueDate: format(start, 'yyyy-MM-dd'),
-      time: allDay ? undefined : format(start, 'HH:mm'),
       estimatedMinutes: minutes,
       status: task.status === 'done' ? 'planned' : task.status,
-    })
+    }
+    if (allDay) patch.time = undefined            // dropped onto the all-day row
+    else if (!opts?.dateOnly) patch.time = format(start, 'HH:mm')
+    updateTask(task.id, patch)
   }
 
   // Mobile month-view drag: reschedule a task to a new day cell. Only the date
@@ -6939,14 +7036,31 @@ function CalendarPage() {
             resizable={dndEnabled}
             draggableAccessor={() => dndEnabled}
             resizableAccessor={() => dndEnabled}
-            popup
+            /* Render EVERY event inline in its month row instead of collapsing
+               the overflow into a "+N more" popup.
+
+               The popup is rendered through a portal overlay ANCHORED OUTSIDE
+               the calendar's own DOM, so an event inside it can start a drag
+               but has no drop target underneath the pointer — the gesture just
+               dies. That is exactly the reported "some tasks can be dragged
+               while others cannot": whichever tasks happened to overflow the
+               visible rows of a busy day became undraggable. With
+               `showAllEvents` the row becomes internally scrollable and every
+               event lives in the grid, where the DnD addon's EventWrapper can
+               wrap it. (`popup` is intentionally NOT set for the same reason.) */
+            showAllEvents
             onEventDrop={dndEnabled ? ({ event, start, end, allDay, isAllDay }: any) => {
               const task = (event as Event & { resource: Task }).resource
-              // react-big-calendar reports a drop onto the all-day header via
-              // `isAllDay` (the timed-cell drop handler omits it entirely). Treat
-              // either flag as "make this an all-day task": clear its time while
-              // keeping the same date.
-              if (task) syncTaskToSlot(task, start, end, Boolean(allDay || isAllDay))
+              if (!task) return
+              // react-big-calendar reports a drop onto the all-day header of a
+              // Day/Week view via `isAllDay` — that genuinely means "make this
+              // an all-day task", so clear the time.
+              // MONTH view rows are date-granular and report NEITHER flag while
+              // always reporting midnight, so a timed task dropped there must
+              // keep its time and only change day (`dateOnly`).
+              const toAllDay = Boolean(allDay || isAllDay)
+              const dateOnly = !toAllDay && view === Views.MONTH
+              syncTaskToSlot(task, start, end, toAllDay, { dateOnly })
             } : undefined}
             onEventResize={dndEnabled ? ({ event, start, end }: any) => {
               const task = (event as Event & { resource: Task }).resource
@@ -8443,7 +8557,20 @@ function AppShell() {
   useEffect(() => {
     setSyncErrorHandler((e) => {
       console.error('[sync] persist error', e)
-      useToast.getState().show('Could not save changes — check your connection', 'info')
+      /* Don't blame the network for every failure. A rejected write is usually
+         a *data* problem (constraint violation, RLS) and telling the user to
+         "check your connection" sends them chasing the wrong thing. Only
+         genuine transport failures get the connectivity wording. */
+      const err = e as { message?: string; code?: string } | null
+      const raw = err?.message ?? ''
+      const offline = typeof navigator !== 'undefined' && navigator.onLine === false
+      const transport = offline || /failed to fetch|network|timeout|econn|fetch failed/i.test(raw)
+      useToast.getState().show(
+        transport
+          ? 'Could not save changes — check your connection'
+          : `Could not save changes${raw ? ` — ${raw}` : ''}`,
+        'info',
+      )
     })
   }, [])
 

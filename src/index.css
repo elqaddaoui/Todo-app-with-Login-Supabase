@@ -451,9 +451,140 @@
   text-align: center;
   transition: background .18s, border-color .18s;
 }
-.kanban-empty:hover{
+.kanban-empty:hover,
+.kanban-empty.is-over{
   border-color: hsl(var(--selected-border) / .6);
   background: hsl(var(--selected-border) / .04);
+}
+
+/* ============================================================
+   STATUS BOARD — Trello-style columns
+   ------------------------------------------------------------
+   The board is a horizontally scrolling strip of fixed-width
+   columns. Each column scrolls its own cards vertically so every
+   column HEADER stays visible no matter how long one list gets.
+   ============================================================ */
+.kanban-board{
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+  /* Fill the pane's remaining height and scroll sideways, not down. */
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-bottom: 8px;
+  scroll-snap-type: x proximity;
+  overscroll-behavior-x: contain;
+}
+.kanban-column{
+  /* Fixed width: columns must NOT shrink to fit, otherwise a board with
+     many statuses squeezes every card into an unreadable sliver. */
+  flex: 0 0 300px;
+  width: 300px;
+  max-height: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-radius: 18px;
+  background: hsl(var(--surface-2));
+  border: 1px solid hsl(var(--border-soft));
+  scroll-snap-align: start;
+  transition: background .18s, border-color .18s, box-shadow .18s;
+}
+.dark .kanban-column{
+  background: hsl(var(--surface-2));
+  border-color: rgba(255,255,255,.06);
+}
+/* Highlight the column the dragged card would land in. Uses a border + ring,
+   never colour alone, so the target is clear without relying on hue. */
+.kanban-column.is-over{
+  border-color: hsl(var(--selected-border) / .65);
+  background: hsl(var(--selected-border) / .06);
+  box-shadow: 0 0 0 2px hsl(var(--selected-border) / .28);
+}
+.kanban-column-header{
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 12px 8px;
+  flex: 0 0 auto;
+}
+.kanban-column-title{
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  color: hsl(var(--muted-foreground));
+  margin: 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.kanban-column-count{
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: hsl(var(--muted-foreground));
+  background: hsl(var(--surface-4));
+  border-radius: 999px;
+  padding: 1px 7px;
+  flex: 0 0 auto;
+}
+.dark .kanban-column-count{ background: rgba(255,255,255,.07); }
+.kanban-column-add{
+  margin-left: auto;
+  flex: 0 0 auto;
+  height: 26px;
+  width: 26px;
+  border-radius: 9px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: hsl(var(--muted-foreground));
+  transition: background .15s, color .15s;
+}
+.kanban-column-add:hover{
+  background: hsl(var(--surface-hover));
+  color: hsl(var(--text-primary));
+}
+.kanban-column-add:focus-visible{
+  outline: 2px solid hsl(var(--focus));
+  outline-offset: 2px;
+}
+.kanban-column-body{
+  flex: 1 1 auto;
+  min-height: 90px;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  padding: 0 10px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.kanban-card{ touch-action: manipulation; }
+/* The original card stays in the flow as a placeholder gap while its clone
+   travels in the DragOverlay. */
+.kanban-card-dragging{ opacity: .35; }
+.kanban-card-overlay{
+  cursor: grabbing;
+  box-shadow: var(--shadow-lg, 0 18px 40px rgba(0,0,0,.28));
+  transform: rotate(1.5deg);
+}
+
+/* Phones: let the board grow with the page instead of fighting for height
+   inside a short viewport, and narrow the columns so a peek of the next one
+   is visible (a strong affordance that the strip scrolls sideways). */
+@media (max-width: 640px){
+  .kanban-board{
+    overflow-y: visible;
+    padding-bottom: 12px;
+  }
+  .kanban-column{
+    flex-basis: 82vw;
+    width: 82vw;
+    max-width: 320px;
+  }
 }
 
 /* ============================================================
@@ -1011,6 +1142,40 @@
   border-top: 1px solid rgba(255,255,255,.05) !important;
 }
 .dark .rbc-month-row{ overflow: visible; }
+/* `showAllEvents` renders every event inline (no "+N more" popup, so every
+   event stays inside the grid and is therefore draggable). The row then owns
+   an internal scroll container, which only works if the row itself CLIPS —
+   the dark-theme `overflow: visible` above would let a busy day spill over
+   its neighbours instead of scrolling. */
+.rbc-month-row:has(.rbc-row-content-scrollable),
+.dark .rbc-month-row:has(.rbc-row-content-scrollable){ overflow: hidden; }
+/* Give the hidden-scrollbar container a visible, themed one so users can tell
+   a day has more events than fit. */
+.rbc-row-content-scrollable .rbc-row-content-scroll-container{
+  scrollbar-width: thin;
+  scrollbar-color: hsl(var(--border-strong)) transparent;
+  overscroll-behavior: contain;
+}
+.rbc-row-content-scrollable .rbc-row-content-scroll-container::-webkit-scrollbar{
+  display: block;
+  width: 6px;
+}
+.rbc-row-content-scrollable .rbc-row-content-scroll-container::-webkit-scrollbar-thumb{
+  background: hsl(var(--border-strong));
+  border-radius: 999px;
+}
+.rbc-row-content-scrollable .rbc-row-content-scroll-container::-webkit-scrollbar-track{
+  background: transparent;
+}
+/* An overflowing day scrolls internally, but a clean cut-off at the row edge
+   reads as "that's all there is". A soft bottom fade on the row (which is the
+   element that clips) signals there is more below without the "+N more" link
+   whose portal-rendered events cannot be dropped on. `mask-image` keeps this
+   purely decorative — it never intercepts the pointer, so drags are unaffected. */
+.rbc-month-row:has(.rbc-row-content-scrollable) .rbc-row-content-scrollable{
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 14px), transparent);
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 14px), transparent);
+}
 .dark .rbc-day-bg{ background: transparent; }
 .dark .rbc-off-range-bg{
   background: rgba(255,255,255,.015) !important;
