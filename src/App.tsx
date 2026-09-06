@@ -29,7 +29,7 @@ import { format, parse, startOfWeek, getDay, addDays, parseISO, isToday, isPast,
 import { enUS } from 'date-fns/locale/en-US'
 import {
   LayoutDashboard, Sun, CalendarDays, FolderKanban, Star, CheckCircle2, Archive, Hash, Settings,
-  Search, Filter, Plus, Menu, PanelLeft, X, Clock3, Inbox, AlertCircle, ChevronLeft, ChevronRight,
+  Search, Filter, Plus, Menu, PanelLeft, PanelLeftClose, PanelLeftOpen, X, Clock3, Inbox, AlertCircle, ChevronLeft, ChevronRight,
   MoreHorizontal, Trash2, Pencil, Moon, Monitor, MessageSquare, Paperclip, ListChecks, GripVertical,
   Sparkles, Target, Rocket, BookOpen, Heart, Briefcase, Circle, PauseCircle, Ban, PlayCircle, CalendarClock,
   Copy, Link as LinkIcon, ExternalLink, FolderInput, Tag as TagIcon,
@@ -1722,8 +1722,10 @@ const statusBadge = (s: Status) =>
     {statusMeta[s].label}
   </span>
 
+/* `data-priority` lets compact (table) mode tint the pill per priority —
+   matching the reference design — without touching the spacious styling. */
 const priorityBadge = (p: Priority, className?: string) =>
-  <span className={cn('badge', priorityMeta[p].color, 'bg-black/5 dark:bg-white/5', className)}>
+  <span data-priority={p} className={cn('badge', priorityMeta[p].color, 'bg-black/5 dark:bg-white/5', className)}>
     {priorityMeta[p].label}
   </span>
 
@@ -2532,7 +2534,12 @@ function TaskRow({ task, showProject = true, depth = 0 }: { task: Task; showProj
         {ctx.node}
         {renaming && <NamePrompt title='Rename task' initial={task.title} label='Title' onClose={() => setRenaming(false)} onSave={(v) => updateTask(task.id, { title: v })} />}
         {confirming && <DeleteConfirm title='Delete task' name={task.title} onClose={() => setConfirming(false)} onConfirm={() => deleteTask(task.id)} />}
-        <div className='flex gap-3 items-start'>
+        {/* `task-row-inner` / `task-row-main` / `task-row-head` are flattened
+            with `display: contents` in COMPACT mode so every cell becomes a
+            direct flex child of `.task-row`. That is what turns the card into
+            a real table row with vertically-aligned columns, without having
+            to fork the markup between the two densities. */}
+        <div className='task-row-inner flex gap-3 items-start'>
           {/* The left-side selection control only exists while Multi-Select
               mode is active. Desktop hover must never reveal it before the
               user explicitly enters the mode via a keyboard shortcut/menu. */}
@@ -2567,18 +2574,18 @@ function TaskRow({ task, showProject = true, depth = 0 }: { task: Task; showProj
             <ChevronRight className='h-3.5 w-3.5' />
           </button>
 
-          <span onPointerDown={e => e.stopPropagation()}><StatusDot status={task.status} onClick={() => toggleDone(task.id)} /></span>
-          <div className='min-w-0 flex-1'>
-            <div className='flex items-start gap-2'>
-              <div className={cn('text-sm font-medium flex-1', task.status === 'done' && 'line-through text-zinc-400')}>{task.title}</div>
-              {hasChildren && (
-                <span className='badge bg-black/5 dark:bg-white/5 text-[10px]' title={`${doneChildren} of ${children.length} subtasks done`}>
-                  <ListChecks className='h-3 w-3' /> {doneChildren}/{children.length}
-                </span>
-              )}
+          <span className='task-row-status' onPointerDown={e => e.stopPropagation()}><StatusDot status={task.status} onClick={() => toggleDone(task.id)} /></span>
+          <div className='task-row-main min-w-0 flex-1'>
+            <div className='task-row-head flex items-start gap-2'>
+              <div className={cn('task-row-title text-sm font-medium flex-1', task.status === 'done' && 'line-through text-zinc-400')}>{task.title}</div>
               <button className='task-favorite-toggle' onPointerDown={e => e.stopPropagation()} onClick={e => { e.stopPropagation(); toggleFav(task.id) }} aria-label='Toggle favorite'>
                 <Star className={cn('h-4 w-4', task.favorite ? 'fill-amber-400 text-amber-400' : 'text-zinc-400')} />
               </button>
+              {hasChildren && (
+                <span className='badge task-row-subcount bg-black/5 dark:bg-white/5 text-[10px]' title={`${doneChildren} of ${children.length} subtasks done`}>
+                  <ListChecks className='h-3 w-3' /> {doneChildren}/{children.length}
+                </span>
+              )}
               {isMobileTaskCard && dndEnabled && (
                 <button
                   type='button'
@@ -2621,32 +2628,50 @@ function TaskRow({ task, showProject = true, depth = 0 }: { task: Task; showProj
                 )}
               </div>
             )}
+            {/* Meta cells. In COMPACT mode each cell becomes a fixed-width
+                table column, and a missing value renders an invisible
+                placeholder so a task without (say) a due date never shifts
+                the columns of the rows around it. In spacious mode the
+                placeholders are not rendered at all, so nothing changes. */}
             <div className={cn('compact-row-meta', !compactMode && 'mt-2 flex flex-wrap gap-x-3 gap-y-2 text-[11px] text-zinc-500', compactMode && 'flex items-center gap-x-3 text-[11px] text-zinc-500')}>
-              {task.dueDate && (
-                <span className={cn('compact-meta compact-meta-date inline-flex items-center gap-1.5', overdue(task) && 'text-rose-600')}>
+              {task.dueDate ? (
+                <span className={cn('compact-meta compact-meta-cell compact-meta-date inline-flex items-center gap-1.5', overdue(task) && 'text-rose-600')}>
                   <CalendarDays className='h-3 w-3' />
                   {format(parseISO(task.dueDate), 'MMM d')}{task.time && ` · ${task.time}`}
                 </span>
-              )}
-              {task.estimatedMinutes && (
-                <span className='compact-meta compact-meta-estimate inline-flex items-center gap-1.5'>
+              ) : compactMode ? (
+                <span className='compact-meta compact-meta-cell compact-meta-date is-empty' aria-hidden='true' />
+              ) : null}
+              {task.estimatedMinutes ? (
+                <span className='compact-meta compact-meta-cell compact-meta-estimate inline-flex items-center gap-1.5'>
                   <Clock3 className='h-3 w-3' />
                   {task.estimatedMinutes}m
                 </span>
-              )}
-              {showProject && p && (
-                <span className='compact-meta compact-meta-project inline-flex items-center gap-1.5'>
-                  <span className='h-2 w-2 rounded-full' style={{ background: p.color }} />
+              ) : compactMode ? (
+                <span className='compact-meta compact-meta-cell compact-meta-estimate is-empty' aria-hidden='true' />
+              ) : null}
+              {showProject && p ? (
+                <span className='compact-meta compact-meta-cell compact-meta-project inline-flex items-center gap-1.5'>
+                  <span className='h-2 w-2 shrink-0 rounded-full' style={{ background: p.color }} />
                   {p.name}
                 </span>
-              )}
-              {priorityBadge(task.priority, 'compact-meta compact-meta-priority')}
-              {ts.slice(0, 2).map(t => (
-                <span key={t.id} className='badge bg-black/5 dark:bg-white/5 compact-meta compact-meta-tag'>
-                  <span className='h-1.5 w-1.5 rounded-full' style={{ background: t.color }} />
-                  {t.name}
+              ) : compactMode && showProject ? (
+                <span className='compact-meta compact-meta-cell compact-meta-project is-empty' aria-hidden='true' />
+              ) : null}
+              {priorityBadge(task.priority, 'compact-meta compact-meta-cell compact-meta-priority')}
+              {/* The tag wrapper is `display: contents` in spacious mode, so
+                  chips keep flowing exactly as before; in compact mode it
+                  becomes the single fixed-width "tag" column. */}
+              {(ts.length > 0 || compactMode) && (
+                <span className='compact-meta-tags'>
+                  {ts.slice(0, 2).map(t => (
+                    <span key={t.id} className='badge bg-black/5 dark:bg-white/5 compact-meta compact-meta-tag'>
+                      <span className='h-1.5 w-1.5 shrink-0 rounded-full' style={{ background: t.color }} />
+                      {t.name}
+                    </span>
+                  ))}
                 </span>
-              ))}
+              )}
             </div>
           </div>
         </div>
@@ -3134,8 +3159,17 @@ function TaskList({ tasks, showProject = true, empty = 'No tasks', emptyDesc, em
         onDragEnd={handleDragEnd}
       >
         <SortableContext items={allIds} strategy={noShiftSortingStrategy}>
-          <div className='task-list-stack space-y-2'>
-            {visible.map(t => <TaskRow key={t.id} task={t} showProject={showProject} />)}
+          {/* `.task-table-scroll` is the single horizontal scroller for the
+              WHOLE compact table on mobile: because it wraps the entire row
+              stack, a sideways swipe started anywhere — on a row, on any
+              column, or in the gap between rows — scrolls all columns
+              together. No column is sticky/frozen, so no content is ever
+              covered and every column stays reachable. On desktop (and in
+              spacious mode) it is a plain, layout-neutral wrapper. */}
+          <div className='task-table-scroll'>
+            <div className='task-list-stack space-y-2'>
+              {visible.map(t => <TaskRow key={t.id} task={t} showProject={showProject} />)}
+            </div>
           </div>
         </SortableContext>
         {/* Floating drag preview — rendered on BOTH mobile and desktop with
@@ -3461,11 +3495,11 @@ function ProfileAvatar({
    Account page on click. When the sidebar is collapsed it degrades to a
    single centered avatar button. Replaces the old plain "Sign out" row;
    sign-out now lives on the Account page (and remains in the command flows). */
-function SidebarProfile() {
+function SidebarProfile({ collapsed: collapsedProp }: { collapsed?: boolean } = {}) {
   const ui = useUI()
   const profile = useProfile()
   const navigate = useNavigate()
-  const collapsed = !ui.sidebar
+  const collapsed = collapsedProp ?? !ui.sidebar
 
   return (
     <button
@@ -3489,9 +3523,19 @@ function SidebarProfile() {
   )
 }
 
-function Sidebar() {
+/* Width of the collapsed "icon rail" sidebar. Kept in one place so the
+   Layout width, the `--app-sidebar-w` CSS variable and the CSS rail styles
+   can never drift apart. */
+const SIDEBAR_RAIL_W = 68
+
+function Sidebar({ forceExpanded = false }: { forceExpanded?: boolean }) {
   const ui = useUI()
   const data = useData()
+  /* `forceExpanded` is used by the mobile drawer: the drawer is already a
+     temporary overlay, so it must always show full labels regardless of the
+     desktop collapsed preference. */
+  const expanded = forceExpanded || ui.sidebar
+  const collapsed = !expanded
   // Local modal state for creating a new project. Replaces the old
   // browser `prompt('Project name')` call with a themed NamePrompt modal.
   const [creatingProject, setCreatingProject] = useState(false)
@@ -3505,23 +3549,60 @@ function Sidebar() {
   const projectIds = roots.map(p => p.id)
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }))
 
+  const navCount = (to: string) =>
+    to === '/today' ? counts.today
+    : to === '/upcoming' ? counts.upcoming
+    : to === '/favorites' ? counts.favorites
+    : to === '/completed' ? counts.completed
+    : 0
+  const allTasksCount = data.tasks.filter(t => !t.archived).length
+
   return (
-    <div className='h-full flex flex-col'>
-      <div className='h-14 border-b px-4 flex items-center gap-3'>
-        <div className='h-8 w-8 rounded-xl bg-black text-white dark:bg-white dark:text-black flex items-center justify-center font-bold'>O</div>
-        {ui.sidebar && <div><div className='text-sm font-semibold'>Orbit</div><div className='text-[10px] text-zinc-500'>Tasks & Calendar</div></div>}
+    <div className={cn('app-sidebar h-full flex flex-col', collapsed && 'is-collapsed')}>
+      <div className='sidebar-header h-14 border-b px-4 flex items-center gap-3'>
+        <div className='sidebar-brand-mark h-8 w-8 shrink-0 rounded-xl bg-black text-white dark:bg-white dark:text-black flex items-center justify-center font-bold'>O</div>
+        {expanded && (
+          <div className='min-w-0 flex-1'>
+            <div className='text-sm font-semibold truncate'>Orbit</div>
+            <div className='text-[10px] text-zinc-500 truncate'>Tasks &amp; Calendar</div>
+          </div>
+        )}
+        {/* Collapse / expand toggle. Hidden inside the mobile drawer (which is
+            already a temporary overlay) — there it would have no meaning. */}
+        {!forceExpanded && (
+          <button
+            type='button'
+            className='sidebar-collapse-toggle'
+            onClick={() => ui.set({ sidebar: !ui.sidebar })}
+            title={collapsed ? 'Expand sidebar (⌘B)' : 'Collapse sidebar (⌘B)'}
+            aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+            aria-expanded={expanded}
+          >
+            {collapsed ? <PanelLeftOpen className='h-4 w-4' /> : <PanelLeftClose className='h-4 w-4' />}
+          </button>
+        )}
       </div>
 
-      {ui.sidebar && (
+      {expanded ? (
         <button className='sidebar-search' onClick={() => ui.set({ command: true })}>
           <Search className='h-4 w-4 shrink-0' />
           <span className='sidebar-search-label'>Search…</span>
           <span className='sidebar-search-kbd'>⌘K</span>
         </button>
+      ) : (
+        <button
+          className='sidebar-rail-btn mt-3'
+          onClick={() => ui.set({ command: true })}
+          title='Search (⌘K)'
+          aria-label='Search'
+        >
+          <Search className='h-4 w-4' />
+        </button>
       )}
 
-      {/* Premium quick-link to All tasks — always visible in the sidebar */}
-      {ui.sidebar && (
+      {/* Premium quick-link to All tasks — always reachable, label-free when
+          the sidebar is collapsed to an icon rail. */}
+      {expanded ? (
         <NavLink
           to='/all-tasks'
           className='all-tasks-link'
@@ -3531,31 +3612,48 @@ function Sidebar() {
             <ListChecks className='h-4 w-4 shrink-0' />
             <span className='truncate font-medium'>Show every task</span>
           </span>
-          <span className='all-tasks-count'>{data.tasks.filter(t => !t.archived).length}</span>
+          <span className='all-tasks-count'>{allTasksCount}</span>
+        </NavLink>
+      ) : (
+        <NavLink
+          to='/all-tasks'
+          className={({ isActive }) => cn('sidebar-rail-btn is-accent mt-1.5', isActive && 'is-active')}
+          onClick={() => ui.set({ mobileNav: false })}
+          title={`Show every task — ${allTasksCount}`}
+          aria-label={`Show every task, ${allTasksCount} tasks`}
+        >
+          <ListChecks className='h-4 w-4' />
+          {allTasksCount > 0 && <span className='sidebar-rail-dot' aria-hidden='true' />}
         </NavLink>
       )}
 
-      <div className='mt-3 flex-1 overflow-y-auto scrollbar-thin px-2 space-y-1'>
-        {navItems.map(i => (
-          <NavLink
-            key={i.to}
-            to={i.to}
-            end={i.to === '/dashboard'}
-            className={({ isActive }) => cn('nav-item', isActive && 'is-active')}
-            onClick={() => ui.set({ mobileNav: false })}
-          >
-            <i.icon className='h-4 w-4 text-zinc-500' />
-            {ui.sidebar && <>
-              <span className='flex-1 truncate'>{i.label}</span>
-              {i.to === '/today' && counts.today > 0 && <span className='text-[10px] text-zinc-500'>{counts.today}</span>}
-              {i.to === '/upcoming' && counts.upcoming > 0 && <span className='text-[10px] text-zinc-500'>{counts.upcoming}</span>}
-              {i.to === '/favorites' && counts.favorites > 0 && <span className='text-[10px] text-zinc-500'>{counts.favorites}</span>}
-              {i.to === '/completed' && counts.completed > 0 && <span className='text-[10px] text-zinc-500'>{counts.completed}</span>}
-            </>}
-          </NavLink>
-        ))}
+      <div className='sidebar-scroll mt-3 flex-1 overflow-y-auto scrollbar-thin px-2 space-y-1'>
+        {navItems.map(i => {
+          const c = navCount(i.to)
+          return (
+            <NavLink
+              key={i.to}
+              to={i.to}
+              end={i.to === '/dashboard'}
+              className={({ isActive }) => cn('nav-item', isActive && 'is-active')}
+              onClick={() => ui.set({ mobileNav: false })}
+              title={collapsed ? (c > 0 ? `${i.label} — ${c}` : i.label) : undefined}
+              aria-label={collapsed ? i.label : undefined}
+            >
+              <i.icon className='nav-item-icon h-4 w-4 text-zinc-500' />
+              {expanded ? (
+                <>
+                  <span className='nav-item-label flex-1 truncate'>{i.label}</span>
+                  {c > 0 && <span className='nav-item-count text-[10px] text-zinc-500'>{c}</span>}
+                </>
+              ) : (
+                c > 0 && <span className='sidebar-rail-dot' aria-hidden='true' />
+              )}
+            </NavLink>
+          )
+        })}
 
-        {ui.sidebar && (
+        {expanded ? (
           <>
             <div className='mt-5 mb-2 px-3 text-[11px] uppercase tracking-wider text-zinc-500 flex items-center justify-between'>
               <span className='font-semibold text-zinc-600 dark:text-zinc-400'>Projects</span>
@@ -3574,6 +3672,22 @@ function Sidebar() {
               </SortableContext>
             </DndContext>
           </>
+        ) : (
+          /* Collapsed rail: projects stay fully accessible as icon-only links
+             (reordering is intentionally disabled here — there is no room for a
+             drag handle; expand the sidebar to reorder). */
+          <>
+            <div className='sidebar-rail-sep' aria-hidden='true' />
+            {roots.map(p => <ProjectRailItem key={p.id} project={p} />)}
+            <button
+              className='sidebar-rail-btn'
+              onClick={() => setCreatingProject(true)}
+              title='Add project'
+              aria-label='Add project'
+            >
+              <Plus className='h-4 w-4' />
+            </button>
+          </>
         )}
       </div>
 
@@ -3581,7 +3695,7 @@ function Sidebar() {
           Sign-out now lives inside Account (and the command palette), keeping
           this footer focused on identity rather than a bare action row. */}
       <div className='border-t p-2'>
-        <SidebarProfile />
+        <SidebarProfile collapsed={collapsed} />
       </div>
 
       {creatingProject && (
@@ -3645,6 +3759,49 @@ function ProjectItem({ project }: { project: Project }) {
         <button onClick={(e) => { e.preventDefault(); e.stopPropagation(); openMenu(e) }} className='opacity-0 hover:opacity-100 group-hover:opacity-100 transition'>
           <MoreHorizontal className='h-3.5 w-3.5 text-zinc-400' />
         </button>
+      </NavLink>
+    </>
+  )
+}
+
+/* Icon-only project entry for the COLLAPSED sidebar rail. Keeps every project
+   reachable (and its context menu intact) without rendering any label. */
+function ProjectRailItem({ project }: { project: Project }) {
+  const count = useData(s => s.tasks).filter(t => t.projectId === project.id && t.status !== 'done' && !t.archived).length
+  const updateProject = useData(s => s.updateProject)
+  const deleteProject = useData(s => s.deleteProject)
+  const ctx = useContextMenu()
+  const [renaming, setRenaming] = useState(false)
+  const [editingIcon, setEditingIcon] = useState(false)
+  const [confirming, setConfirming] = useState(false)
+
+  const openMenu = (e: React.MouseEvent) => {
+    ctx.open(e, buildProjectMenu(project, {
+      onRename: () => setRenaming(true),
+      onEditIcon: () => setEditingIcon(true),
+      onCopyLink: () => { try { navigator.clipboard?.writeText(window.location.origin + '/projects/' + project.id) } catch {} },
+      onOpenNewTab: () => window.open(window.location.origin + '/projects/' + project.id, '_blank'),
+      onDelete: () => setConfirming(true),
+    }))
+  }
+
+  return (
+    <>
+      {ctx.node}
+      {renaming && <NamePrompt title='Rename project' initial={project.name} label='Name' onClose={() => setRenaming(false)} onSave={(v) => updateProject(project.id, { name: v })} />}
+      {editingIcon && <IconPicker project={project} onClose={() => setEditingIcon(false)} />}
+      {confirming && <DeleteConfirm title='Delete project' name={project.name} onClose={() => setConfirming(false)} onConfirm={() => deleteProject(project.id)} />}
+      <NavLink
+        to={`/projects/${project.id}`}
+        className={({ isActive }) => cn('sidebar-rail-btn', isActive && 'is-active')}
+        onContextMenu={openMenu}
+        onClick={() => useUI.getState().set({ mobileNav: false })}
+        title={count > 0 ? `${project.name} — ${count}` : project.name}
+        aria-label={project.name}
+        style={{ ['--project-color' as any]: project.color } as React.CSSProperties}
+      >
+        <IconProject name={project.icon} color={project.color} className='!h-7 !w-7' />
+        {count > 0 && <span className='sidebar-rail-dot' aria-hidden='true' />}
       </NavLink>
     </>
   )
@@ -8225,7 +8382,7 @@ function Layout() {
      the sidebar becomes a drawer so its layout width is 0. */
   useEffect(() => {
     const root = document.documentElement
-    const w = (!mobile && ui.sidebar) ? ui.sidebarW : 0
+    const w = mobile ? 0 : (ui.sidebar ? ui.sidebarW : SIDEBAR_RAIL_W)
     root.style.setProperty('--app-sidebar-w', `${w}px`)
   }, [mobile, ui.sidebar, ui.sidebarW])
 
@@ -8384,7 +8541,17 @@ function Layout() {
 
   return (
     <div className={cn('h-full flex overflow-hidden', selectionActive && 'multi-select-active')}>
-      {!mobile && ui.sidebar && <div style={{ width: ui.sidebarW }} className='border-r shrink-0'><Sidebar /></div>}
+      {/* Desktop sidebar. It is ALWAYS mounted — collapsing swaps it for a
+          slim icon-only rail rather than removing it, so navigation never
+          disappears and the toggle stays reachable in both states. */}
+      {!mobile && (
+        <div
+          style={{ width: ui.sidebar ? ui.sidebarW : SIDEBAR_RAIL_W }}
+          className='sidebar-shell border-r shrink-0'
+        >
+          <Sidebar />
+        </div>
+      )}
       <div className='flex-1 min-w-0 flex flex-col'>
         <Topbar />
         <div className='flex-1 min-h-0'>
@@ -8421,7 +8588,9 @@ function Layout() {
           <>
             <motion.div className='fixed inset-0 bg-black/20 z-40' initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => ui.set({ mobileNav: false })} />
             <motion.div className='fixed left-0 top-0 bottom-0 w-72 max-w-[85vw] bg-[hsl(var(--background))] z-50 border-r' initial={{ x: -320 }} animate={{ x: 0 }} exit={{ x: -320 }}>
-              <Sidebar />
+              {/* The drawer is a temporary overlay — always show full labels
+                  regardless of the persisted desktop collapse preference. */}
+              <Sidebar forceExpanded />
             </motion.div>
           </>
         )}

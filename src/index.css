@@ -588,70 +588,350 @@
 }
 
 /* ============================================================
-   COMPACT (TABLE) MODE — minimum rendered layout
+   COMPACT (TABLE) MODE — clean, minimal single-line table rows
    Activated by adding .compact-mode to <html> via Settings.
-   Renders TaskRow / KanbanTaskCard as slim table-style rows.
+
+   HOW IT WORKS
+   ------------
+   The task row markup is a nested card (row > inner > main > head / meta).
+   Rather than fork the JSX per density, compact mode FLATTENS the wrappers
+   with `display: contents` so every leaf cell becomes a direct flex child of
+   `.task-row`. Flex `order` then places the cells in table order and fixed
+   `flex-basis` widths turn the right-hand meta into real, vertically aligned
+   columns:
+
+     [toggle] [status] [title ...flex...] [star] [0/1] [date] [est]
+     [project] [priority] [tag] [handle] [menu]
+
+   Because every row shares the same right edge (nested subtask rows are only
+   inset on the LEFT), the right-anchored fixed columns line up across all
+   nesting levels — exactly like the reference design.
+
+   Empty cells are still rendered (as `.is-empty` placeholders) so a task
+   without a due date does not shift the columns of its neighbours.
    ============================================================ */
-.compact-mode .task-row,
+.compact-mode{
+  /* One place to tune the whole table geometry. */
+  --ct-row-h: 40px;
+  --ct-gap: 10px;
+  --ct-pad-x: 12px;
+  --ct-title-min: 160px;
+  --ct-subcount: 46px;
+  --ct-date: 104px;
+  --ct-estimate: 52px;
+  --ct-project: 104px;
+  --ct-priority: 76px;
+  --ct-tag: 96px;
+  /* Intrinsic width of one full row — drives the mobile scroll area. */
+  --ct-table-w: 760px;
+}
+
+/* ---- The row itself becomes the table row ---- */
+.compact-mode .task-row{
+  display: flex !important;
+  align-items: center;
+  gap: var(--ct-gap);
+  min-height: var(--ct-row-h);
+  padding: 0 var(--ct-pad-x) !important;
+  border-radius: 10px !important;
+  font-size: 13px;
+  line-height: 1.25;
+}
+/* Flatten the structural wrappers so their children become row cells. */
+.compact-mode .task-row .task-row-inner,
+.compact-mode .task-row .task-row-main,
+.compact-mode .task-row .task-row-head,
+.compact-mode .task-row .compact-row-meta{
+  display: contents !important;
+}
+/* Verbose content (description, image strip) has no place in a table row. */
+.compact-mode .task-row .compact-hide,
+.compact-mode .compact-card .compact-hide{ display: none !important; }
+
+/* ---- Cell order (left to right) ---- */
+.compact-mode .task-row .task-select-checkbox{ order: 0; }
+.compact-mode .task-row .subtask-toggle{ order: 1; }
+.compact-mode .task-row .task-row-status{ order: 2; }
+.compact-mode .task-row .task-row-title{ order: 3; }
+.compact-mode .task-row .task-favorite-toggle{ order: 4; }
+.compact-mode .task-row .task-row-subcount{ order: 5; }
+.compact-mode .task-row .compact-meta-date{ order: 6; }
+.compact-mode .task-row .compact-meta-estimate{ order: 7; }
+.compact-mode .task-row .compact-meta-project{ order: 8; }
+.compact-mode .task-row .compact-meta-priority{ order: 9; }
+.compact-mode .task-row .compact-meta-tags{ order: 10; }
+.compact-mode .task-row .task-drag-handle{ order: 11; }
+.compact-mode .task-row .task-row-menu{ order: 12; }
+
+/* ---- Left cells ---- */
+.compact-mode .task-row .task-select-checkbox,
+.compact-mode .task-row .subtask-toggle,
+.compact-mode .task-row .task-row-status,
+.compact-mode .task-row .task-favorite-toggle{
+  margin-top: 0 !important;
+  flex: 0 0 auto;
+  align-self: center;
+}
+.compact-mode .task-row .task-row-status{ display: inline-flex; align-items: center; }
+.compact-mode .task-row .task-row-status > button{ margin-top: 0 !important; display: inline-flex; }
+
+/* The title is the only elastic cell — it absorbs all remaining space. */
+.compact-mode .task-row .task-row-title{
+  flex: 1 1 auto;
+  min-width: var(--ct-title-min);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+/* ---- Right-hand meta columns: fixed width = true vertical alignment ---- */
+.compact-mode .task-row .task-row-subcount{ flex: 0 0 var(--ct-subcount); }
+.compact-mode .task-row .compact-meta-date{ flex: 0 0 var(--ct-date); }
+.compact-mode .task-row .compact-meta-estimate{ flex: 0 0 var(--ct-estimate); }
+.compact-mode .task-row .compact-meta-project{ flex: 0 0 var(--ct-project); }
+.compact-mode .task-row .compact-meta-priority{ flex: 0 0 var(--ct-priority); }
+.compact-mode .task-row .compact-meta-tags{ flex: 0 0 var(--ct-tag); }
+
+.compact-mode .task-row .task-row-subcount,
+.compact-mode .task-row .compact-meta{
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  max-width: none;
+  margin: 0 !important;
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.compact-mode .task-row .compact-meta > svg,
+.compact-mode .task-row .task-row-subcount > svg{ flex: 0 0 auto; }
+
+/* Placeholder cells keep the columns honest without drawing anything. */
+.compact-mode .task-row .compact-meta.is-empty{
+  visibility: hidden;
+  pointer-events: none;
+}
+/* Outside compact mode a placeholder must not occupy any space at all. */
+html:not(.compact-mode) .compact-meta-cell.is-empty{ display: none !important; }
+
+/* The tag cell holds the chips. Only the first fits the column, so the row
+   stays a single clean line (matching the reference); the full tag list stays
+   available in the task details panel. In spacious mode the wrapper is
+   transparent (`display: contents`) so chips lay out exactly as before. */
+.compact-meta-tags{ display: contents; }
+.compact-mode .task-row .compact-meta-tags{
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+}
+.compact-mode .task-row .compact-meta-tags .compact-meta-tag{ min-width: 0; }
+.compact-mode .task-row .compact-meta-tags .compact-meta-tag ~ .compact-meta-tag{ display: none; }
+
+/* ---- Trailing controls: always reserve their column so hover never
+        reflows the table. ---- */
+.compact-mode .task-row .task-row-menu{
+  flex: 0 0 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  align-self: center;
+}
+.compact-mode .task-row .task-drag-handle{
+  align-self: center;
+  margin-top: 0;
+}
+
+/* ---- Chips / badges: slimmer, and priority-tinted like the reference ---- */
+.compact-mode .task-row .badge,
+.compact-mode .compact-card .badge{
+  padding: 2px 8px;
+  border-radius: 7px;
+  font-size: 11px;
+  gap: 5px;
+}
+.compact-mode .task-row .compact-meta-priority{ justify-content: center; }
+.compact-mode .task-row .compact-meta-priority[data-priority='urgent']{
+  background: hsl(350 80% 55% / .16) !important;
+  color: #fb7185 !important;
+}
+.compact-mode .task-row .compact-meta-priority[data-priority='high']{
+  background: hsl(32 95% 50% / .16) !important;
+  color: #fbbf24 !important;
+}
+.compact-mode .task-row .compact-meta-priority[data-priority='medium']{
+  background: hsl(205 90% 55% / .16) !important;
+  color: #7dd3fc !important;
+}
+.compact-mode .task-row .compact-meta-priority[data-priority='low']{
+  background: hsl(215 15% 55% / .16) !important;
+  color: #a1a1aa !important;
+}
+html:not(.dark).compact-mode .task-row .compact-meta-priority[data-priority='urgent']{ color: #be123c !important; }
+html:not(.dark).compact-mode .task-row .compact-meta-priority[data-priority='high']{ color: #b45309 !important; }
+html:not(.dark).compact-mode .task-row .compact-meta-priority[data-priority='medium']{ color: #1d4ed8 !important; }
+html:not(.dark).compact-mode .task-row .compact-meta-priority[data-priority='low']{ color: #52525b !important; }
+
+/* ---- Stack + subtask tree rhythm ---- */
+.compact-mode .task-list-stack{ gap: 6px !important; }
+.compact-mode .subtask-children{
+  margin-top: 6px;
+  padding-left: 22px;
+  border-left: 1px dashed hsl(var(--border));
+  margin-left: 11px;
+  gap: 6px;
+}
+.compact-mode .subtask-children > .flex.flex-col{ gap: 6px !important; }
+.compact-mode .subtask-add-inline{ padding: 3px 8px; font-size: 11px; }
+
+/* Kanban / project cards keep the previous slim treatment. */
+.compact-mode .panel.compact-card{ border-radius: 10px !important; }
 .compact-mode .compact-card{
   padding: 6px 10px !important;
   border-radius: 10px !important;
   font-size: 13px;
 }
-.compact-mode .task-row .compact-hide,
-.compact-mode .compact-card .compact-hide{ display:none !important; }
-.compact-mode .task-row .compact-row-meta,
 .compact-mode .compact-card .compact-row-meta{
   margin-top: 4px !important;
   gap: 6px 10px;
   font-size: 11px;
   align-items: center;
 }
-.compact-mode .task-row .compact-row-meta > *,
-.compact-mode .compact-card .compact-row-meta > *{
-  white-space: nowrap;
-  max-width: 100%;
-}
-.compact-mode .task-row{
-  display: flex !important;
-  align-items: center;
-}
-.compact-mode .panel.compact-card{
-  border-radius: 10px !important;
-}
-.compact-mode .task-list-stack{ gap: 4px !important; }
-.compact-mode .subtask-children{ padding-left: 22px; border-left: 1px dashed hsl(var(--border)); margin-left: 11px; gap: 4px; }
-.compact-mode .task-row .badge,
-.compact-mode .compact-card .badge{ padding: 3px 8px; }
+.compact-mode .compact-card .compact-row-meta > *{ white-space: nowrap; max-width: 100%; }
 
-@media (max-width: 640px){
+/* ============================================================
+   COMPACT MODE — MOBILE: horizontal scrolling for the WHOLE table
+   ------------------------------------------------------------
+   `.task-table-scroll` wraps the entire row stack, so a horizontal swipe
+   anywhere — on any row, any column, or the empty space between rows —
+   scrolls the complete table as one unit. NO column is sticky or frozen, so
+   nothing is ever hidden behind an overlay and every column stays reachable
+   by scrolling.
+
+   Gesture safety: on mobile the row body is NOT a drag activator (only the
+   dedicated `.task-drag-handle` is, and it keeps `touch-action: none`), so
+   `touch-action: pan-x pan-y` on the row hands plain swipes straight to the
+   scroller. The long-press timers in TaskRow are cancelled by any movement
+   over 6px, so scrolling can never be mistaken for a long-press, and a
+   long-press drag on the handle can never be mistaken for a scroll.
+   ============================================================ */
+.task-table-scroll{ min-width: 0; }
+
+@media (max-width: 768px){
+  .compact-mode{
+    --ct-gap: 8px;
+    --ct-pad-x: 10px;
+    --ct-row-h: 40px;
+    /* The title must be free to SHRINK on mobile. The table width below is
+       fixed, so a nested row is narrower than its parent by exactly its
+       indent — the elastic title cell absorbs that difference, which is what
+       keeps every row's RIGHT edge (and therefore every meta column) on the
+       same x position at every nesting depth. A non-zero min-width here would
+       instead force nested rows to overflow and drift right. */
+    --ct-title-min: 0px;
+    --ct-date: 100px;
+    --ct-project: 96px;
+    --ct-tag: 92px;
+    --ct-table-w: 760px;
+  }
+
+  /* Shallower indent per level so deeply nested titles keep usable width
+     inside the fixed table width. */
+  .compact-mode .subtask-children{
+    padding-left: 14px;
+    margin-left: 7px;
+  }
+
+  .compact-mode .task-table-scroll{
+    overflow-x: auto;
+    overflow-y: visible;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior-x: contain;
+    /* Breathing room so row shadows / drop lines are not clipped and the
+       horizontal scrollbar never covers a row. */
+    padding-bottom: 6px;
+    scrollbar-width: thin;
+  }
+  .compact-mode .task-table-scroll::-webkit-scrollbar{ height: 6px; }
+  .compact-mode .task-table-scroll::-webkit-scrollbar-thumb{
+    background: hsl(var(--border));
+    border-radius: 999px;
+  }
+  /* Only the TOP-LEVEL stack gets the intrinsic table width; nested subtask
+     rows simply fill their parent, which keeps every row sharing the same
+     right edge and therefore the same column positions. */
+  .compact-mode .task-table-scroll > .task-list-stack{
+    width: var(--ct-table-w);
+    min-width: var(--ct-table-w);
+  }
+  /* Nested subtask containers are inset on the LEFT only, so every row's
+     RIGHT edge is the table's right edge — which is exactly what makes the
+     meta columns line up at every depth. The one thing that can break it is
+     a row being forced wider than its container by its own min-content
+     width (the deepest descendant's min-content propagates up the stretch
+     chain). Pinning `min-width: 0` all the way down removes that floor, so
+     the elastic title cell absorbs the indent and truncates instead. */
+  .compact-mode .task-table-scroll .task-row-wrap,
+  .compact-mode .task-table-scroll .subtask-children,
+  .compact-mode .task-table-scroll .subtask-children-anim,
+  /* The collapse animator is a GRID, and grid items default to
+     `min-width: auto` — that reintroduces the min-content floor one level
+     below, which is what pushed nested rows ~12px past the table's right
+     edge. Pinning its child to 0 is the piece that actually lets the whole
+     subtree shrink. */
+  .compact-mode .task-table-scroll .subtask-children-anim > *,
+  .compact-mode .task-table-scroll .subtask-children > .flex.flex-col,
+  .compact-mode .task-table-scroll .task-row{
+    min-width: 0;
+    max-width: 100%;
+  }
+  .compact-mode .task-table-scroll .task-row .task-row-title{
+    min-width: 0;
+    flex-shrink: 1;
+  }
+
+  /* Let a plain swipe scroll (both axes) instead of being swallowed by the
+     drag sensor. The drag handle keeps `touch-action: none`. */
   .compact-mode .task-row,
+  .compact-mode .task-row.task-row-draggable{
+    touch-action: pan-x pan-y;
+  }
+  .compact-mode .task-row .task-drag-handle{ touch-action: none; }
+
+  /* Mobile keeps EVERY column — nothing is excluded. The row-actions button
+     is the only thing hidden, because the context menu it opens is
+     desktop-only (mobile uses long-press / the details panel instead). */
+  .compact-mode .task-row .task-row-menu{ display: none !important; }
+  .compact-mode .task-row .compact-meta-date,
+  .compact-mode .task-row .compact-meta-estimate,
+  .compact-mode .task-row .compact-meta-project,
+  .compact-mode .task-row .compact-meta-priority,
+  .compact-mode .task-row .compact-meta-tags,
+  .compact-mode .task-row .task-favorite-toggle,
+  .compact-mode .task-row .task-row-subcount{
+    display: inline-flex !important;
+  }
+  .compact-mode .task-row .compact-meta.is-empty{ display: inline-flex !important; }
+
   .compact-mode .compact-card{
     padding: 6px 8px !important;
     border-radius: 8px !important;
   }
-  .compact-mode .task-row .task-row-menu,
-  .compact-mode .task-row .task-favorite-toggle,
   .compact-mode .compact-card .task-favorite-toggle,
-  .compact-mode .task-row .compact-meta-estimate,
-  .compact-mode .task-row .compact-meta-project,
-  .compact-mode .task-row .compact-meta-tag,
-  .compact-mode .compact-card .compact-meta-tag{
-    display: none !important;
-  }
-  .compact-mode .task-row .compact-row-meta,
+  .compact-mode .compact-card .compact-meta-tag{ display: none !important; }
   .compact-mode .compact-card .compact-row-meta{
     margin-top: 3px !important;
     gap: 6px;
     font-size: 10px;
     flex-wrap: wrap;
-    overflow: visible;
   }
-  .compact-mode .task-row .compact-row-meta > *,
-  .compact-mode .compact-card .compact-row-meta > *{
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
+}
+
+@media (max-width: 640px){
   .compact-mode .weekly-progress svg{ height: 136px; }
 }
 
@@ -4017,4 +4297,169 @@ body.is-dnd-dragging *{
   .lightbox-nav-next{ right: 8px; }
   .lightbox-stage{ padding: 60px 8px 92px; }
   .lightbox-image{ max-height: 72vh; }
+}
+
+/* ============================================================
+   SIDEBAR — COLLAPSIBLE ICON RAIL
+   ------------------------------------------------------------
+   The sidebar has two states, both fully functional:
+     • expanded  — icons + labels + counts + project list (unchanged)
+     • collapsed — a slim icon-only rail; every label is hidden and its
+                   text moves into the `title` / `aria-label` attributes so
+                   the UI stays accessible and discoverable on hover.
+   Toggled by the button in the sidebar header (or ⌘/Ctrl+B). The state is
+   persisted with the rest of the UI preferences, so it survives reloads.
+   ============================================================ */
+.sidebar-shell{
+  transition: width .22s cubic-bezier(.4, 0, .2, 1);
+  overflow: hidden;
+}
+@media (prefers-reduced-motion: reduce){
+  .sidebar-shell{ transition: none; }
+}
+
+/* Header toggle button — same visual language as the sidebar nav items. */
+.sidebar-collapse-toggle{
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 30px;
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  color: hsl(var(--text-muted));
+  background: transparent;
+  transition: background .18s ease, color .15s ease, box-shadow .2s ease;
+}
+.sidebar-collapse-toggle:hover{
+  background: hsl(var(--accent) / .7);
+  color: hsl(var(--text-primary));
+}
+.dark .sidebar-collapse-toggle:hover{
+  background: hsl(var(--surface-hover));
+  color: hsl(var(--text-primary));
+}
+.sidebar-collapse-toggle:focus-visible{
+  outline: none;
+  box-shadow: 0 0 0 2px hsl(var(--background)), 0 0 0 4px hsl(var(--focus) / .5);
+}
+
+/* ---- Collapsed rail ---- */
+.app-sidebar.is-collapsed .sidebar-header{
+  padding-left: 0;
+  padding-right: 0;
+  flex-direction: column;
+  justify-content: center;
+  gap: 0;
+  height: auto;
+  padding-top: 8px;
+  padding-bottom: 8px;
+}
+.app-sidebar.is-collapsed .sidebar-brand-mark{
+  height: 30px;
+  width: 30px;
+  border-radius: 9px;
+  font-size: 13px;
+}
+.app-sidebar.is-collapsed .sidebar-collapse-toggle{ margin-top: 4px; }
+
+.app-sidebar.is-collapsed .sidebar-scroll{
+  padding-left: 0;
+  padding-right: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+/* Neutralize the utility margins the expanded layout relies on. */
+.app-sidebar.is-collapsed .sidebar-scroll > * + *{ margin-top: 0 !important; }
+
+/* Nav items become centered square icon buttons. */
+.app-sidebar.is-collapsed .nav-item{
+  position: relative;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  gap: 0;
+  justify-content: center;
+  border-radius: 11px;
+  flex: 0 0 auto;
+}
+.app-sidebar.is-collapsed .nav-item.is-active .nav-item-icon,
+.app-sidebar.is-collapsed .nav-item.is-active svg{ color: hsl(var(--focus)); }
+
+/* Generic rail button — shared by search, "all tasks", projects and "add". */
+.sidebar-rail-btn{
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  flex: 0 0 auto;
+  align-self: center;
+  border-radius: 11px;
+  color: hsl(var(--text-secondary));
+  background: transparent;
+  transition: background .18s ease, color .15s ease, box-shadow .2s ease;
+}
+.sidebar-rail-btn:hover{
+  background: hsl(var(--accent) / .7);
+  color: hsl(var(--text-primary));
+}
+.dark .sidebar-rail-btn:hover{
+  background: hsl(var(--surface-hover));
+  color: hsl(var(--text-primary));
+}
+.sidebar-rail-btn:focus-visible{
+  outline: none;
+  box-shadow: 0 0 0 2px hsl(var(--background)), 0 0 0 4px hsl(var(--focus) / .5);
+}
+.sidebar-rail-btn.is-accent{
+  background: hsl(var(--focus) / .14);
+  border: 1px solid hsl(var(--focus) / .25);
+  color: hsl(var(--focus));
+}
+.sidebar-rail-btn.is-accent:hover{ background: hsl(var(--focus) / .24); }
+.sidebar-rail-btn.is-active{
+  background: hsl(var(--accent));
+  color: hsl(var(--text-primary));
+}
+.dark .sidebar-rail-btn.is-active{
+  background: hsl(var(--surface-selected));
+  box-shadow:
+    inset 2px 0 0 0 hsl(var(--focus)),
+    inset 0 0 0 1px rgba(255,255,255,.04);
+}
+
+/* Tiny presence dot replacing numeric counts on the rail. */
+.sidebar-rail-dot{
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  height: 5px;
+  width: 5px;
+  border-radius: 999px;
+  background: hsl(var(--focus));
+  box-shadow: 0 0 0 2px hsl(var(--background));
+}
+
+.sidebar-rail-sep{
+  width: 24px;
+  height: 1px;
+  margin: 8px 0;
+  background: hsl(var(--border));
+  flex: 0 0 auto;
+}
+.dark .sidebar-rail-sep{ background: rgba(255,255,255,.08); }
+
+/* Nothing in the collapsed rail may render a label. This is a belt-and-
+   braces guard: labels are already conditionally unmounted in JSX, so this
+   only catches anything added later. */
+.app-sidebar.is-collapsed .nav-item-label,
+.app-sidebar.is-collapsed .nav-item-count,
+.app-sidebar.is-collapsed .sidebar-search-label,
+.app-sidebar.is-collapsed .sidebar-search-kbd,
+.app-sidebar.is-collapsed .profile-meta{
+  display: none !important;
 }
