@@ -7,9 +7,10 @@
    helpers translate between the two representations in both directions.
    ============================================================ */
 import type {
-  Task, Project, Tag, UserSettings,
+  Task, Project, Tag, UserSettings, Status,
   ChecklistItem, Comment, Attachment, Activity, TaskImage,
 } from './types'
+import { normalizeVisibleStatusBoards, STATUS_BOARD_ORDER } from './types'
 
 /* ---------- DB row shapes (only the columns we read/write) ---------- */
 export type ProjectRow = {
@@ -58,6 +59,8 @@ export type SettingsRow = {
   undo_toast_enabled: boolean; undo_toast_duration: number
   remember_last_task_options: boolean; show_project_descriptions: boolean
   multi_select_enabled: boolean; calendar_start_hour: number; calendar_end_hour: number
+  /* Stored as a `text[]` of status keys; null means "show every board". */
+  visible_status_boards: Status[] | null
 }
 
 /* Normalize a DB `time` value ("14:00:00") to the app's "HH:mm". */
@@ -143,6 +146,8 @@ export function rowToSettings(r: SettingsRow): UserSettings {
     multiSelectEnabled: r.multi_select_enabled ?? true,
     calendarStartHour: r.calendar_start_hour ?? 0,
     calendarEndHour: r.calendar_end_hour ?? 24,
+    // `null` (never customised) and a bad/empty array both mean "all boards".
+    visibleStatusBoards: normalizeVisibleStatusBoards(r.visible_status_boards),
   }
 }
 
@@ -239,5 +244,11 @@ export function settingsToRow(s: Partial<UserSettings>, userId: string): Partial
   if (s.multiSelectEnabled !== undefined) row.multi_select_enabled = s.multiSelectEnabled
   if (s.calendarStartHour !== undefined) row.calendar_start_hour = s.calendarStartHour
   if (s.calendarEndHour !== undefined) row.calendar_end_hour = s.calendarEndHour
+  if (s.visibleStatusBoards !== undefined) {
+    const boards = normalizeVisibleStatusBoards(s.visibleStatusBoards)
+    // Persist "everything visible" as NULL so the column keeps its "never
+    // customised" meaning and future statuses are shown automatically.
+    row.visible_status_boards = boards.length === STATUS_BOARD_ORDER.length ? null : boards
+  }
   return row
 }
