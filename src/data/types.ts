@@ -14,6 +14,30 @@ export type Priority = 'low' | 'medium' | 'high' | 'urgent'
 export type Category =
   | 'work' | 'personal' | 'errands' | 'health' | 'learning' | 'finance' | 'social' | 'other'
 
+/* Canonical left-to-right order of the Status Board columns. Shared by the
+   board renderer, the visibility setting and the row<->domain mappers so a
+   persisted selection is always re-ordered back into board order. */
+export const STATUS_BOARD_ORDER: Status[] = [
+  'not_started', 'planned', 'in_progress', 'waiting', 'blocked', 'done', 'cancelled',
+]
+
+/** Every value that is a valid status board key. */
+const STATUS_BOARD_SET = new Set<string>(STATUS_BOARD_ORDER)
+
+/**
+ * Coerce any stored/incoming value into a valid, de-duplicated, board-ordered
+ * status list. Unknown keys are dropped (schema drift, hand-edited rows) and an
+ * empty result falls back to ALL boards, because a project page with zero
+ * columns would be a dead end the user could not recover from.
+ */
+export function normalizeVisibleStatusBoards(value: unknown): Status[] {
+  if (!Array.isArray(value)) return [...STATUS_BOARD_ORDER]
+  const picked = new Set<Status>()
+  for (const v of value) if (typeof v === 'string' && STATUS_BOARD_SET.has(v)) picked.add(v as Status)
+  if (picked.size === 0) return [...STATUS_BOARD_ORDER]
+  return STATUS_BOARD_ORDER.filter(s => picked.has(s))
+}
+
 export type Tag = { id: string; name: string; color: string }
 
 export type Project = {
@@ -68,4 +92,11 @@ export type UserSettings = {
   calendarStartHour: number
   /** Last visible hour (1-24) in the Day/Week calendar views. */
   calendarEndHour: number
+  /**
+   * Which status boards (kanban columns) are shown on every project's Status
+   * Board, in board order. `null`/absent means "all boards" — the default.
+   * At least one board is always kept visible so the board can never become
+   * empty and undraggable.
+   */
+  visibleStatusBoards: Status[]
 }

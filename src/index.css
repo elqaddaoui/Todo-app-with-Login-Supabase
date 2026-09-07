@@ -476,6 +476,41 @@
   padding-bottom: 8px;
   scroll-snap-type: x proximity;
   overscroll-behavior-x: contain;
+  /* Auto-scroll during a drag sets scrollLeft every frame, so the scroller
+     must NOT be in smooth mode — a queued smooth animation per frame is what
+     made the strip lurch and overshoot whole columns. */
+  scroll-behavior: auto;
+}
+/* While a card is in flight, snapping must be off entirely: proximity snap
+   competes with the drag's own eased scrolling and yanks the strip a full
+   column at a time, skipping the boards in between. */
+.kanban-board.is-dragging{
+  scroll-snap-type: none;
+}
+.kanban-board.is-dragging .kanban-column{
+  scroll-snap-align: none;
+}
+
+/* Footnote shown when some status boards are hidden via Settings, so tasks
+   parked in a hidden board are never silently unaccounted for. */
+.kanban-hidden-note{
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 11px;
+  color: hsl(var(--muted-foreground));
+}
+.kanban-hidden-note-link{
+  font-weight: 600;
+  color: hsl(var(--focus));
+  border-radius: 6px;
+}
+.kanban-hidden-note-link:hover{ text-decoration: underline; }
+.kanban-hidden-note-link:focus-visible{
+  outline: 2px solid hsl(var(--focus));
+  outline-offset: 2px;
 }
 .kanban-column{
   /* Fixed width: columns must NOT shrink to fit, otherwise a board with

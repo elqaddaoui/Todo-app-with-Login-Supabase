@@ -17,7 +17,7 @@ import {
 const PROJECT_COLUMNS = 'id,user_id,name,icon,color,favorite,parent_id,description,documentation,order,archived,created_at,updated_at'
 const TAG_COLUMNS = 'id,user_id,name,color,created_at,updated_at'
 const TASK_COLUMNS = 'id,user_id,title,description,status,priority,category,project_id,parent_id,due_date,start_date,time_of_day,estimated_minutes,favorite,archived,order,completed_at,created_at,updated_at'
-const SETTINGS_COLUMNS = 'user_id,theme,sidebar_width,details_width,compact_mode,dnd_enabled,calendar_side_panel,undo_toast_enabled,undo_toast_duration,remember_last_task_options,show_project_descriptions,multi_select_enabled,calendar_start_hour,calendar_end_hour'
+const SETTINGS_COLUMNS = 'user_id,theme,sidebar_width,details_width,compact_mode,dnd_enabled,calendar_side_panel,undo_toast_enabled,undo_toast_duration,remember_last_task_options,show_project_descriptions,multi_select_enabled,calendar_start_hour,calendar_end_hour,visible_status_boards'
 
 /**
  * Load only the rows required to render the application shell and task lists.

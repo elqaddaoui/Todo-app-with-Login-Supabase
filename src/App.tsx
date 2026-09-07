@@ -15,12 +15,13 @@ import { persistSettings, setSettingsUserId } from './data/settings'
 import { startRealtime, stopRealtime, setRealtimeBridge, type RealtimeBridge } from './data/realtime'
 import { resetEcho } from './data/echo'
 import type { TaskDetails, UserSettings } from './data/types'
+import { STATUS_BOARD_ORDER, normalizeVisibleStatusBoards } from './data/types'
 import ProgressDashboard, { type DashboardActions } from './dashboard/ProgressDashboard'
 import { useForm, Controller } from 'react-hook-form'
 import { z } from 'zod'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { motion, AnimatePresence } from 'framer-motion'
-import { DndContext, DragOverlay, KeyboardSensor, PointerSensor, TouchSensor, closestCenter, closestCorners, useSensor, useSensors, useDraggable, useDroppable, type DragEndEvent, type DragMoveEvent, type DragOverEvent, type DragStartEvent } from '@dnd-kit/core'
+import { DndContext, DragOverlay, KeyboardSensor, MeasuringStrategy, PointerSensor, TouchSensor, closestCenter, closestCorners, useSensor, useSensors, useDraggable, useDroppable, type CollisionDetection, type DragEndEvent, type DragMoveEvent, type DragOverEvent, type DragStartEvent } from '@dnd-kit/core'
 import { SortableContext, arrayMove, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy, rectSortingStrategy, type SortingStrategy } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import { Calendar as BigCalendar, dateFnsLocalizer, Views, type View, type Event } from 'react-big-calendar'
@@ -241,7 +242,10 @@ function propagateUnfinishedUp(tasks: Task[], startId: string | undefined): Task
     : t)
 }
 
-const useUI = create<{
+/* Named (rather than inline) so the `persist` middleware's `merge` callback
+   can annotate its own types without referencing `useUI` inside its own
+   initializer, which TypeScript rejects as circular. */
+type UIState = {
   sidebar: boolean; mobileNav: boolean; details: boolean; selected: string | null; calendarTarget: string | null;
   quick: boolean; command: boolean; filters: boolean;
   theme: 'light' | 'dark' | 'system'; sidebarW: number; detailsW: number;
@@ -267,8 +271,12 @@ const useUI = create<{
   // Visible time range for the Day/Week calendar views.
   calendarStartHour: number;
   calendarEndHour: number;
+  // Which status boards (kanban columns) render on every project page.
+  visibleStatusBoards: Status[];
   set: (p: Partial<any>) => void
-}>()(persist(
+}
+
+const useUI = create<UIState>()(persist(
   (set) => ({
     sidebar: true, mobileNav: false, details: false, selected: null, calendarTarget: null,
     quick: false, command: false, filters: false,
@@ -287,9 +295,19 @@ const useUI = create<{
     multiSelectEnabled: true,
     calendarStartHour: 0,
     calendarEndHour: 24,
+    visibleStatusBoards: [...STATUS_BOARD_ORDER],
     set: (p) => set(p),
   }),
-  { name: 'orbit-ui' }
+  {
+    name: 'orbit-ui',
+    /* A persisted board selection from an older build (or a hand-edited
+       localStorage entry) is re-validated on rehydrate, so an unknown or empty
+       value can never leave a project page with zero columns. */
+    merge: (persisted, current): UIState => {
+      const merged = { ...current, ...(persisted as Partial<UIState>) }
+      return { ...merged, visibleStatusBoards: normalizeVisibleStatusBoards(merged.visibleStatusBoards) }
+    },
+  }
 ))
 
 /* Remembered task-creation options (persisted locally). Only used when the
@@ -325,6 +343,7 @@ const pickSettings = (s: ReturnType<typeof useUI.getState>): UserSettings => ({
   multiSelectEnabled: s.multiSelectEnabled,
   calendarStartHour: s.calendarStartHour,
   calendarEndHour: s.calendarEndHour,
+  visibleStatusBoards: s.visibleStatusBoards,
 })
 
 /* Persist settings to Supabase whenever a backed field changes. The
@@ -361,6 +380,13 @@ const useDndEnabled = () => useUI(s => s.dndEnabled)
  *  mobile long-press never enters selection mode, and the Ctrl/Cmd-click +
  *  Ctrl/Cmd+A shortcuts are inert. */
 const useMultiSelectEnabled = () => useUI(s => s.multiSelectEnabled)
+
+/** The status boards a project page should render — always in canonical board
+ *  order and never empty (see `normalizeVisibleStatusBoards`). */
+const useVisibleStatusBoards = (): Status[] => {
+  const stored = useUI(s => s.visibleStatusBoards)
+  return useMemo(() => normalizeVisibleStatusBoards(stored), [stored])
+}
 
 // Apply compact mode class to <html> so CSS can target it globally
 const applyCompactMode = (on: boolean) => {
@@ -4353,6 +4379,113 @@ function Switch({ checked, onChange, label }: { checked: boolean; onChange: () =
   )
 }
 
+/* ------------------------------------------------------------------
+   Status board visibility
+   ------------------------------------------------------------------
+   Lets the user choose which status boards (kanban columns) appear on
+   the Status Board of EVERY project page. Hiding a board never touches
+   the tasks in it — they keep their status and stay reachable from the
+   task list, search and filters — so the control is presentational and
+   always reversible.
+
+   Guard rails:
+     • At least one board must stay visible; the last remaining checkbox
+       is disabled so the board can't become an empty dead end.
+     • The summary counts the tasks currently parked in hidden boards, so
+       the user is never silently unaware that work is out of sight.
+   ------------------------------------------------------------------ */
+function StatusBoardVisibilitySetting({ compact = false }: { compact?: boolean }) {
+  const stored = useUI(s => s.visibleStatusBoards)
+  const setUI = useUI(s => s.set)
+  const tasks = useData(s => s.tasks)
+  const visible = useMemo(() => normalizeVisibleStatusBoards(stored), [stored])
+  const visibleSet = useMemo(() => new Set(visible), [visible])
+  const isLastVisible = visible.length === 1
+
+  // How many non-archived project tasks sit in a board that's now hidden.
+  const hiddenTaskCount = useMemo(
+    () => tasks.filter(t => !t.archived && t.projectId && !visibleSet.has(t.status)).length,
+    [tasks, visibleSet],
+  )
+
+  const toggle = (status: Status) => {
+    const next = visibleSet.has(status)
+      ? visible.filter(s => s !== status)
+      : [...visible, status]
+    // Refuse to hide the final board — normalize() would silently restore
+    // every board, which would read as the toggle doing the opposite.
+    if (next.length === 0) return
+    setUI({ visibleStatusBoards: normalizeVisibleStatusBoards(next) })
+  }
+
+  const allVisible = visible.length === STATUS_BOARD_ORDER.length
+
+  return (
+    <Card className={cn(compact && '!p-4')}>
+      <div className='flex items-start gap-3'>
+        <div className='flex-1'>
+          <div className='text-sm font-semibold flex items-center gap-2'>
+            <FolderKanban className='h-4 w-4 text-zinc-500' />Status boards
+          </div>
+          <div className='mt-1 text-xs text-zinc-500'>
+            Choose which boards appear on the Status Board of every project.{' '}
+            <span className='font-medium text-[hsl(var(--foreground))]'>
+              {visible.length} of {STATUS_BOARD_ORDER.length} shown
+            </span>
+            . Hiding a board never changes or deletes its tasks — they keep their
+            status and stay visible in the task list, search and filters.
+            {hiddenTaskCount > 0 && (
+              <> Currently <span className='font-medium text-[hsl(var(--foreground))]'>{hiddenTaskCount}</span>{' '}
+              {hiddenTaskCount === 1 ? 'task sits' : 'tasks sit'} in a hidden board.</>
+            )}
+          </div>
+        </div>
+        <button
+          type='button'
+          className='btn btn-ghost h-8 px-2.5 text-xs shrink-0 disabled:opacity-40 disabled:pointer-events-none'
+          disabled={allVisible}
+          onClick={() => setUI({ visibleStatusBoards: [...STATUS_BOARD_ORDER] })}
+          title={allVisible ? 'All boards are already shown' : 'Show every status board'}
+        >
+          Show all
+        </button>
+      </div>
+      <div className={cn('mt-4 grid gap-2', compact ? 'grid-cols-1' : 'sm:grid-cols-2')}>
+        {STATUS_BOARD_ORDER.map(status => {
+          const meta = statusMeta[status]
+          const checked = visibleSet.has(status)
+          // The last visible board is locked ON, never locked OFF.
+          const locked = checked && isLastVisible
+          const count = tasks.filter(t => !t.archived && t.projectId && t.status === status).length
+          return (
+            <label
+              key={status}
+              className={cn(
+                'panel flex items-center gap-2.5 p-2.5 text-sm transition',
+                locked ? 'opacity-70 cursor-not-allowed' : 'cursor-pointer hover:shadow-sm',
+                checked && 'ring-2 ring-indigo-500/25',
+              )}
+              title={locked ? 'At least one status board must stay visible' : undefined}
+            >
+              <input
+                type='checkbox'
+                className='h-4 w-4 accent-indigo-500 shrink-0'
+                checked={checked}
+                disabled={locked}
+                onChange={() => toggle(status)}
+                aria-label={`Show the ${meta.label} board`}
+              />
+              <span className={cn('h-2 w-2 rounded-full shrink-0', meta.dot)} aria-hidden='true' />
+              <span className='flex-1 truncate'>{meta.label}</span>
+              <span className='text-[11px] tabular-nums text-zinc-500'>{count}</span>
+            </label>
+          )
+        })}
+      </div>
+    </Card>
+  )
+}
+
 /* Shared settings body. `compact` renders a tighter version for the
    Quick Settings popup; the full version powers the main Settings page.
    Both operate on the identical useUI store so they are always in sync. */
@@ -4412,6 +4545,9 @@ function SettingsContent({ compact = false }: { compact?: boolean }) {
           />
         </div>
       </Card>
+
+      {/* ====== Status board visibility ====== */}
+      <StatusBoardVisibilitySetting compact={compact} />
 
       {/* ====== Calendar visible time range ====== */}
       <Card className={cn(compact && '!p-4')}>
@@ -5707,16 +5843,37 @@ function KanbanTaskCard({ task }: { task: Task }) {
 }
 
 /* ============================================================
-   useBoardAutoScroll — keeps off-screen board columns reachable
+   useBoardAutoScroll — smooth, controlled horizontal auto-scroll
    ------------------------------------------------------------
    The Trello-style board scrolls HORIZONTALLY, so a card dragged
    toward the left/right edge must pull the column strip along or
    the far columns can never be dropped onto.
 
-   This listens on `pointermove` (not the HTML5 `dragover`, which
-   @dnd-kit never fires) and eases the scroll speed by how close the
-   pointer is to the edge. @dnd-kit already auto-scrolls the nearest
-   VERTICAL scroll container, so we only drive the X axis here.
+   Why this is hand-rolled instead of using dnd-kit's autoscroll:
+   dnd-kit accelerates by pointer distance with no speed ceiling and
+   no easing, which on a 300px-wide column strip flies past two or
+   three boards in a few frames ("skipping boards"). We exclude the
+   strip from it entirely (see `autoScroll` on the board's DndContext)
+   and drive X here with three properties that make it controllable:
+
+     1. TIME-BASED, not per-frame. Speed is px-per-SECOND scaled by
+        the real frame delta, so a 120Hz display scrolls at exactly
+        the same rate as a 60Hz one. The old code did
+        `scrollLeft += 24` per frame, i.e. one 300px column every
+        ~208ms at 60Hz but ~104ms at 120Hz — the same gesture moved
+        twice as far on a high-refresh screen, which is why the
+        scrolling felt uncontrollable. The eased version below
+        crosses a column in ~484ms on any display.
+     2. EASED + SPEED-CAPPED. An ease-in curve on edge proximity plus
+        a hard px/s ceiling means the strip creeps at the boundary
+        and never exceeds ~1 column per ~0.6s — slow enough that
+        every board it passes is a droppable target.
+     3. RAMPED. Velocity accelerates toward its target instead of
+        snapping to it, so entering the hot zone doesn't jolt, and
+        leaving it decelerates rather than stopping dead.
+
+   Scroll position is also CLAMPED to the scrollable range, so the
+   loop parks itself at either end instead of spinning forever.
    ============================================================ */
 function useBoardAutoScroll(containerRef: React.RefObject<HTMLElement | null>, active: boolean) {
   useEffect(() => {
@@ -5724,53 +5881,173 @@ function useBoardAutoScroll(containerRef: React.RefObject<HTMLElement | null>, a
     const el = containerRef.current
     if (!el) return
 
-    const EDGE = 110      // px from edge that triggers scroll
-    const MAX_SPEED = 24  // px per frame at the very edge
-    let raf = 0
-    let velocity = 0
+    /* Hot zone is a share of the container width (bounded in px) so it feels
+       the same on a narrow phone strip and an ultrawide desktop board. Kept
+       deliberately modest — the project page's board is only ~790px wide next
+       to the 440px doc pane, and a fat zone there would swallow the columns
+       nearest each edge, making them impossible to aim at without the strip
+       sliding away underneath the pointer. */
+    const rect0 = el.getBoundingClientRect()
+    const EDGE = Math.max(56, Math.min(120, rect0.width * 0.12))
+    const MAX_SPEED = 620   // px/s at the very edge (~1 column per 0.6s)
+    const MIN_SPEED = 90    // px/s just inside the hot zone — a deliberate creep
+    const RAMP = 2600       // px/s² acceleration toward the target velocity
+    const Y_SLACK = 80      // px above/below the strip that still counts as "on it"
 
-    const tick = () => {
-      if (Math.abs(velocity) < 0.5) { raf = 0; return }
-      el.scrollLeft += velocity
+    let raf = 0
+    let target = 0          // desired velocity, px/s
+    let velocity = 0        // current velocity, px/s
+    let last = 0
+
+    const tick = (now: number) => {
+      const dt = last ? Math.min((now - last) / 1000, 0.05) : 0
+      last = now
+
+      // Ease velocity toward the target so starts and stops are gradual.
+      const step = RAMP * dt
+      if (velocity < target) velocity = Math.min(target, velocity + step)
+      else if (velocity > target) velocity = Math.max(target, velocity - step)
+
+      const max = el.scrollWidth - el.clientWidth
+      if (max <= 0) { raf = 0; velocity = 0; last = 0; return }
+
+      const next = Math.max(0, Math.min(max, el.scrollLeft + velocity * dt))
+      if (next !== el.scrollLeft) el.scrollLeft = next
+
+      // Park the loop once we've coasted to a stop, or when we're pinned
+      // against an edge and still being pushed further into it.
+      const stalled = (next <= 0 && velocity < 0) || (next >= max && velocity > 0)
+      if ((target === 0 && Math.abs(velocity) < 1) || (stalled && target !== 0 && Math.abs(velocity - target) < 1)) {
+        if (target === 0) { velocity = 0; raf = 0; last = 0; return }
+      }
       raf = requestAnimationFrame(tick)
     }
 
-    const onPointerMove = (e: PointerEvent) => {
-      const rect = el.getBoundingClientRect()
-      // Ignore pointers far above/below the strip (e.g. over the doc pane).
-      if (e.clientY < rect.top - 60 || e.clientY > rect.bottom + 60) { velocity = 0; return }
-
-      const fromLeft = e.clientX - rect.left
-      const fromRight = rect.right - e.clientX
-
-      if (fromLeft < EDGE) {
-        velocity = -MAX_SPEED * Math.min(1, (EDGE - fromLeft) / EDGE)
-      } else if (fromRight < EDGE) {
-        velocity = MAX_SPEED * Math.min(1, (EDGE - fromRight) / EDGE)
-      } else {
-        velocity = 0
-      }
-      if (velocity !== 0 && !raf) raf = requestAnimationFrame(tick)
+    const ensureRunning = () => {
+      if (!raf) { last = 0; raf = requestAnimationFrame(tick) }
     }
 
-    const stop = () => { velocity = 0; if (raf) { cancelAnimationFrame(raf); raf = 0 } }
+    /* Ease-in on edge proximity: `t` is 0 at the inner boundary of the hot
+       zone and 1 at the container edge. Squaring it keeps the first half of
+       the zone very slow, which is what makes near-edge drops precise. */
+    const speedFor = (t: number) => MIN_SPEED + (MAX_SPEED - MIN_SPEED) * (t * t)
+
+    const updateFrom = (x: number, y: number) => {
+      const rect = el.getBoundingClientRect()
+      // A pointer well outside the strip (e.g. over the doc pane) must not
+      // keep the board scrolling.
+      if (y < rect.top - Y_SLACK || y > rect.bottom + Y_SLACK) { target = 0; ensureRunning(); return }
+
+      const fromLeft = x - rect.left
+      const fromRight = rect.right - x
+
+      if (fromLeft < EDGE) target = -speedFor(Math.min(1, (EDGE - fromLeft) / EDGE))
+      else if (fromRight < EDGE) target = speedFor(Math.min(1, (EDGE - fromRight) / EDGE))
+      else target = 0
+
+      if (target !== 0 || Math.abs(velocity) > 0) ensureRunning()
+    }
+
+    const onPointerMove = (e: PointerEvent) => updateFrom(e.clientX, e.clientY)
+    // Touch drags report through touchmove; without this the board only
+    // auto-scrolls for mouse/pen input.
+    const onTouchMove = (e: TouchEvent) => {
+      const t = e.touches[0]
+      if (t) updateFrom(t.clientX, t.clientY)
+    }
+
+    const stop = () => {
+      target = 0
+      velocity = 0
+      last = 0
+      if (raf) { cancelAnimationFrame(raf); raf = 0 }
+    }
 
     window.addEventListener('pointermove', onPointerMove)
+    window.addEventListener('touchmove', onTouchMove, { passive: true })
     window.addEventListener('pointerup', stop)
     window.addEventListener('pointercancel', stop)
+    window.addEventListener('touchend', stop)
+    window.addEventListener('touchcancel', stop)
     return () => {
       window.removeEventListener('pointermove', onPointerMove)
+      window.removeEventListener('touchmove', onTouchMove)
       window.removeEventListener('pointerup', stop)
       window.removeEventListener('pointercancel', stop)
+      window.removeEventListener('touchend', stop)
+      window.removeEventListener('touchcancel', stop)
       stop()
     }
   }, [containerRef, active])
 }
 
+/* ============================================================
+   boardCollisionDetection — never lose track of the target board
+   ------------------------------------------------------------
+   `closestCorners` alone misses the target in two situations that
+   both read to the user as "this board isn't detected":
+
+     • The pointer is over a column's HEADER or its padding, which
+       are outside the `col:` droppable (that ref is on the body).
+     • A tall column's cards are scrolled away, so the nearest
+       droppable by corner distance belongs to a NEIGHBOURING column.
+
+   So we resolve the board geometrically first: if the pointer's X
+   sits inside a column's full bounds, that column wins outright —
+   an exact hit-test, which is the most accurate signal available.
+   Only when the pointer is outside every column (gaps, past the
+   ends) do we fall back to dnd-kit's corner heuristics.
+   ============================================================ */
+const boardCollisionDetection: CollisionDetection = (args) => {
+  const pointer = args.pointerCoordinates
+  if (pointer) {
+    /* Step 1 — which column is the pointer over? Hit-tested on the X axis
+       only, on purpose: dragging along a column's header, its padding or the
+       empty space below its last card must still target that column, which is
+       exactly what users expect when they sweep a card sideways. */
+    const column = args.droppableContainers.find(c => {
+      if (!String(c.id).startsWith('col:')) return false
+      const r = c.rect.current
+      return !!r && pointer.x >= r.left && pointer.x <= r.right
+    })
+
+    if (column) {
+      const colRect = column.rect.current!
+      /* Step 2 — inside that column, prefer a card directly under the pointer
+         so vertical reordering keeps its per-card precision. Candidates are
+         restricted to cards horizontally inside THIS column, so a card that
+         is scrolled out of its own column's clip box (and therefore painted
+         over a neighbour) can never hijack the drop target. */
+      const card = args.droppableContainers.find(c => {
+        if (String(c.id).startsWith('col:')) return false
+        const r = c.rect.current
+        if (!r) return false
+        const centerX = r.left + r.width / 2
+        if (centerX < colRect.left || centerX > colRect.right) return false
+        return pointer.y >= r.top && pointer.y <= r.bottom
+          && pointer.x >= r.left && pointer.x <= r.right
+      })
+      const hit = card ?? column
+      return [{ id: hit.id, data: { droppableContainer: hit, value: 0 } }]
+    }
+  }
+  // Pointer is in a gap between columns or past either end — fall back to
+  // dnd-kit's corner heuristics (also the keyboard-sensor path, which has no
+  // pointer coordinates at all).
+  return closestCorners(args)
+}
+
 /* One Trello column. Registers itself as a droppable so a card can be
    dropped on an EMPTY column (with no cards there is no sortable item for
    the collision detector to hit, which is the classic "can't move anything
-   into Done" kanban bug). */
+   into Done" kanban bug).
+
+   The droppable ref sits on the whole <section>, not on the scrolling body:
+   the measured rect then spans the column's FULL width and height, including
+   its header and padding. That is what lets `boardCollisionDetection`
+   hit-test every board reliably — with the ref on the inner body, dragging
+   across a header or a column's padding fell into a dead zone that belonged
+   to no droppable at all. */
 function KanbanColumn({
   status, label, tasks, isOver, onAdd,
 }: {
@@ -5785,6 +6062,7 @@ function KanbanColumn({
   const ids = useMemo(() => tasks.map(t => t.id), [tasks])
   return (
     <section
+      ref={setNodeRef}
       className={cn('kanban-column', isOver && 'is-over')}
       aria-label={`${label}, ${tasks.length} ${tasks.length === 1 ? 'task' : 'tasks'}`}
     >
@@ -5802,7 +6080,7 @@ function KanbanColumn({
           <Plus className='h-4 w-4' />
         </button>
       </header>
-      <div ref={setNodeRef} className='kanban-column-body scrollbar-thin'>
+      <div className='kanban-column-body scrollbar-thin'>
         <SortableContext items={ids} strategy={verticalListSortingStrategy}>
           {tasks.map(t => <KanbanTaskCard key={t.id} task={t} />)}
         </SortableContext>
@@ -5820,6 +6098,7 @@ function KanbanColumn({
 function ProjectPage() {
   const { id } = useParams()
   const data = useData()
+  const boardNavigate = useNavigate()
   const p = data.projects.find(x => x.id === id)
   const [previewMode, setPreviewMode] = useState<'list' | 'status'>('status')
   // Board drag state: the card being dragged, and the column the pointer is
@@ -5828,6 +6107,16 @@ function ProjectPage() {
   const [overCol, setOverCol] = useState<Status | null>(null)
   const dndEnabled = useDndEnabled()
   const [adding, setAdding] = useState<Status | null>(null)
+  // Which status boards the user chose to show (Settings → Status boards).
+  const visibleBoards = useVisibleStatusBoards()
+
+  /* The last board the pointer was genuinely over. dnd-kit reports `over:
+     null` for the frames where the pointer sits in a gap between columns or
+     briefly outside the strip; dropping on such a frame used to discard the
+     move entirely ("the board wasn't detected"). Remembering the last valid
+     target makes the drop land where the user aimed. Kept in a ref so the
+     drag handlers read it without re-rendering on every pointer move. */
+  const lastOverRef = useRef<{ col: Status | null; overId: string | null }>({ col: null, overId: null })
 
   // On mobile (< lg breakpoint) we render the Documentation panel as a
   // collapsible footer that's COLLAPSED BY DEFAULT, so it never covers the
@@ -5868,35 +6157,59 @@ function ProjectPage() {
      ordering impossible to keep. A board's vertical order IS the user's
      priority, exactly like Trello, so it must be the persisted `order`. */
   const boardTasks = [...visibleTasks].sort((a, b) => a.order - b.order)
-  const kanbanGroups: { key: Status; label: string }[] = [
-    { key: 'not_started', label: 'Not Started' },
-    { key: 'planned', label: 'Planned' },
-    { key: 'in_progress', label: 'In Progress' },
-    { key: 'waiting', label: 'Waiting' },
-    { key: 'blocked', label: 'Blocked' },
-    { key: 'done', label: 'Done' },
-    { key: 'cancelled', label: 'Cancelled' },
-  ]
-  const columns = kanbanGroups.map(g => ({ ...g, items: boardTasks.filter(t => t.status === g.key) }))
-  const byId = new Map(boardTasks.map(t => [t.id, t]))
+  /* Only the boards enabled in Settings are rendered. Hiding a board is
+     purely presentational — the tasks keep their status and remain in the
+     list view, search and filters — so we surface a count of what's out of
+     sight rather than pretending those tasks don't exist. */
+  const columns = visibleBoards.map(key => ({
+    key,
+    label: statusMeta[key].label,
+    items: boardTasks.filter(t => t.status === key),
+  }))
+  const visibleBoardSet = new Set(visibleBoards)
+  const hiddenBoardTaskCount = boardTasks.filter(t => !visibleBoardSet.has(t.status)).length
+  const hiddenBoardCount = STATUS_BOARD_ORDER.length - visibleBoards.length
+  // Only cards on a VISIBLE board can be dragged, so the drop-target lookup
+  // must be built from the same set the collision detector can actually see.
+  const byId = new Map(boardTasks.filter(t => visibleBoardSet.has(t.status)).map(t => [t.id, t]))
   const draggingTask = draggingId ? byId.get(draggingId) ?? null : null
 
   /* Resolve whatever @dnd-kit reports we're over into a target column.
      `over` is either a column droppable (`col:<status>`) when hovering empty
-     space, or another card — in which case we take that card's column. */
+     space, or another card — in which case we take that card's column. A
+     hidden board is never a legal target even if a stale id points at one. */
   const columnOf = (overId: string | null): Status | null => {
     if (!overId) return null
-    if (overId.startsWith('col:')) return overId.slice(4) as Status
-    return byId.get(overId)?.status ?? null
+    const status = overId.startsWith('col:')
+      ? overId.slice(4) as Status
+      : byId.get(overId)?.status ?? null
+    return status && visibleBoardSet.has(status) ? status : null
   }
 
   const onDragStart = (e: DragStartEvent) => {
-    setDraggingId(String(e.active.id))
-    setOverCol(byId.get(String(e.active.id))?.status ?? null)
+    const activeId = String(e.active.id)
+    const from = byId.get(activeId)?.status ?? null
+    setDraggingId(activeId)
+    setOverCol(from)
+    // Seed the fallback with the card's own column, so a drag that is released
+    // without ever registering a valid target is a harmless no-op instead of
+    // a lost move.
+    lastOverRef.current = { col: from, overId: activeId }
   }
 
   const onDragOver = (e: DragOverEvent) => {
-    setOverCol(columnOf(e.over ? String(e.over.id) : null))
+    const overId = e.over ? String(e.over.id) : null
+    const col = columnOf(overId)
+    if (col) {
+      // Real target — remember it for the drop.
+      lastOverRef.current = { col, overId }
+      setOverCol(col)
+      return
+    }
+    // Pointer is momentarily between columns: KEEP the highlight on the last
+    // valid board instead of flickering it off, so the user always sees where
+    // the card will land.
+    setOverCol(lastOverRef.current.col)
   }
 
   const onDragEnd = (e: DragEndEvent) => {
@@ -5904,7 +6217,13 @@ function ProjectPage() {
     setDraggingId(null)
     setOverCol(null)
     const task = byId.get(activeId)
-    const target = columnOf(e.over ? String(e.over.id) : null)
+
+    // Prefer dnd-kit's reported target, then fall back to the last board the
+    // pointer was genuinely over (see `lastOverRef`).
+    const reportedId = e.over ? String(e.over.id) : null
+    const target = columnOf(reportedId) ?? lastOverRef.current.col
+    const overId = (columnOf(reportedId) ? reportedId : lastOverRef.current.overId) ?? ''
+    lastOverRef.current = { col: null, overId: null }
     if (!task || !target) return
 
     // Destination column WITHOUT the dragged card, so we can splice it back in
@@ -5914,8 +6233,8 @@ function ProjectPage() {
 
     // Where to insert: at the hovered card's slot, or at the end when the drop
     // landed on the column's empty space / its own header area.
-    const overId = e.over ? String(e.over.id) : ''
-    const at = overId.startsWith('col:') ? rest.length : Math.max(0, rest.indexOf(overId))
+    const hoveredIndex = rest.indexOf(overId)
+    const at = overId.startsWith('col:') || hoveredIndex < 0 ? rest.length : hoveredIndex
     const nextIds = [...rest.slice(0, at), activeId, ...rest.slice(at)]
 
     // Nothing actually changed — skip the write so we don't churn the sync
@@ -5972,19 +6291,39 @@ function ProjectPage() {
           <TaskList tasks={projectTasks} showProject={false} empty='No tasks yet' emptyDesc='Tasks added to this project will appear here.' />
         ) : (
           /* A single DndContext spans every column so a card can be dragged
-             from any column into any other. `closestCorners` beats
-             `closestCenter` for columns of unequal height — it compares the
-             card's corners to each droppable, which is what makes dropping
-             near the top or bottom of a tall column feel accurate. */
+             from any column into any other. See `boardCollisionDetection`
+             for why the default `closestCorners` isn't enough on its own. */
           <DndContext
             sensors={sensors}
-            collisionDetection={closestCorners}
+            collisionDetection={boardCollisionDetection}
+            /* Re-measure droppables continuously WHILE dragging. The board and
+               its columns are scroll containers, so their rects change as the
+               strip auto-scrolls; with dnd-kit's default (measure once on drag
+               start) every column's cached rect goes stale the moment the board
+               moves, which is precisely why far columns "weren't detected". */
+            measuring={{ droppable: { strategy: MeasuringStrategy.Always } }}
+            /* dnd-kit must NOT auto-scroll the horizontal strip: its
+               acceleration has no speed ceiling, so it fought and overshot the
+               eased scrolling in `useBoardAutoScroll` — measurably scrolling
+               ~280px in the time the eased scroller moved ~40px, which is
+               exactly the "skipping boards" symptom. Excluding the strip by
+               element (a `threshold.x` of 0 is NOT enough — dnd-kit still
+               scrolls it) leaves dnd-kit doing what it's good at: scrolling
+               each column's body vertically. */
+            autoScroll={{ canScroll: (el) => el !== boardRef.current }}
             onDragStart={onDragStart}
             onDragOver={onDragOver}
             onDragEnd={onDragEnd}
-            onDragCancel={() => { setDraggingId(null); setOverCol(null) }}
+            onDragCancel={() => {
+              setDraggingId(null)
+              setOverCol(null)
+              lastOverRef.current = { col: null, overId: null }
+            }}
           >
-            <div ref={boardRef} className='kanban-board scrollbar-thin'>
+            {/* `is-dragging` disables scroll-snap for the duration of the drag:
+                snapping yanks the strip a whole column at a time, which is what
+                made the board jump past boards mid-drag. */}
+            <div ref={boardRef} className={cn('kanban-board scrollbar-thin', draggingId && 'is-dragging')}>
               {columns.map(c => (
                 <KanbanColumn
                   key={c.key}
@@ -6003,6 +6342,22 @@ function ProjectPage() {
               {draggingTask ? <KanbanCardBody task={draggingTask} dragging /> : null}
             </DragOverlay>
           </DndContext>
+        )}
+        {/* Be explicit when boards are hidden, so tasks parked in one are
+            never silently invisible. Only shown when it actually matters. */}
+        {previewMode === 'status' && hiddenBoardCount > 0 && (
+          <div className='kanban-hidden-note'>
+            <span>
+              {hiddenBoardCount} {hiddenBoardCount === 1 ? 'board is' : 'boards are'} hidden
+              {hiddenBoardTaskCount > 0 && <> — {hiddenBoardTaskCount} {hiddenBoardTaskCount === 1 ? 'task' : 'tasks'} not shown here</>}
+              .
+            </span>
+            <button
+              type='button'
+              className='kanban-hidden-note-link'
+              onClick={() => boardNavigate('/settings')}
+            >Change in Settings</button>
+          </div>
         )}
         {adding && (
           <NamePrompt
