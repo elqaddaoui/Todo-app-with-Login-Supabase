@@ -2270,16 +2270,18 @@ html:not(.dark).compact-mode .task-row .compact-meta-priority[data-priority='low
 }
 
 /* ============================================================
-   v5 UPDATE — desktop keeps whole-row drag, mobile uses a compact handle
+   Task dragging — desktop whole-row drag, mobile full-height grab handle
    ============================================================ */
 
 .task-drag-handle{
   display: none;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
-  flex: 0 0 28px;
+  width: 44px;
+  height: 44px;
+  min-width: 44px;
+  min-height: 44px;
+  flex: 0 0 44px;
   align-self: flex-start;
   margin-top: -2px;
   border-radius: 8px;
@@ -2380,14 +2382,47 @@ body.is-dnd-dragging *{
   box-shadow: 0 24px 48px -10px rgba(0,0,0,.6), 0 0 0 1px hsl(var(--focus) / .45);
 }
 
-/* Mobile: while dragging, keep the row visible above the rest and surface only
-   the compact handle as the drag activator. */
+/* A full-height grab rail is easy to catch anywhere along a spacious task,
+   including long cards and nested rows. Keep it separate from task controls
+   so ordinary body swipes and long-press selection still work. */
 @media (max-width: 768px){
-  .task-row.task-row-draggable.is-dragging{
-    transform: scale(1);
+  .task-row:has(.task-drag-handle){
+    position: relative;
+    padding-right: 60px;
+    min-height: 56px;
   }
+  .task-row.task-row-draggable{ touch-action: pan-x pan-y; }
   .task-drag-handle{
     display: inline-flex;
+    position: absolute;
+    top: 6px;
+    bottom: 6px;
+    right: 6px;
+    height: auto;
+    margin-top: 0;
+    background: hsl(var(--muted) / .5);
+    cursor: grab;
+  }
+  .task-drag-handle:active{ cursor: grabbing; }
+  .task-drag-handle:focus-visible{
+    outline: 2px solid hsl(var(--focus));
+    outline-offset: 2px;
+  }
+  .task-drag-handle svg{ width: 20px; height: 20px; pointer-events: none; }
+
+  /* Compact tables can be wider than the viewport. Keep the handle reachable
+     at the leading edge as the table scrolls; its own column reserves space. */
+  .compact-mode .task-row:has(.task-drag-handle){ padding-right: var(--ct-pad-x); }
+  .compact-mode .task-row .task-drag-handle{
+    position: sticky;
+    left: 0;
+    top: auto;
+    bottom: auto;
+    right: auto;
+    order: -1;
+    height: 44px;
+    z-index: 1;
+    background: hsl(var(--card));
   }
 }
 
