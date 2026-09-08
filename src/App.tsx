@@ -21,7 +21,7 @@ import { useForm, Controller } from 'react-hook-form'
 import { z } from 'zod'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { motion, AnimatePresence } from 'framer-motion'
-import { DndContext, DragOverlay, KeyboardSensor, MeasuringStrategy, PointerSensor, TouchSensor, closestCenter, closestCorners, useSensor, useSensors, useDraggable, useDroppable, type CollisionDetection, type DragEndEvent, type DragMoveEvent, type DragOverEvent, type DragStartEvent } from '@dnd-kit/core'
+import { DndContext, DragOverlay, KeyboardSensor, MeasuringStrategy, PointerSensor, TouchSensor, closestCenter, closestCorners, pointerWithin, useSensor, useSensors, useDraggable, useDroppable, type CollisionDetection, type DragEndEvent, type DragMoveEvent, type DragOverEvent, type DragStartEvent } from '@dnd-kit/core'
 import { SortableContext, arrayMove, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy, rectSortingStrategy, type SortingStrategy } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import { Calendar as BigCalendar, dateFnsLocalizer, Views, type View, type Event } from 'react-big-calendar'
@@ -2315,18 +2315,13 @@ function TaskRow({ task, showProject = true, depth = 0 }: { task: Task; showProj
   const updateTask = useData(s => s.updateTask)
   const addTask = useData(s => s.addTask)
   const navigate = useNavigate()
-  const { attributes, listeners, setNodeRef, setActivatorNodeRef, transform, transition, isDragging } = useSortable({ id: task.id })
-  // While this row is the one being dragged, we COLLAPSE its slot entirely
-  // (height:0, no margin, no border/padding, no children) so the sibling list
-  // does NOT shift by the dragged row's height. Without this, dnd-kit reserves
-  // an origin slot the same size as the dragged item, which pushes every row
-  // below by that height and makes the visual drop position feel offset from
-  // the cursor. Collapsing the origin slot means the indicator line above /
-  // below the row under the cursor is always exactly under the cursor.
+  const dndEnabled = useDndEnabled()
+  const { attributes, listeners, setNodeRef, setActivatorNodeRef, transform, transition, isDragging } = useSortable({ id: task.id, disabled: !dndEnabled })
+  // Collapse the source slot, but keep the row, handle and subtree mounted.
+  // Removing the touch's original target can terminate the gesture on mobile;
+  // retaining it also preserves expanded subtask state after drop/cancel.
   const style: React.CSSProperties = isDragging
     ? {
-        transform: CSS.Transform.toString(transform),
-        transition,
         height: 0,
         minHeight: 0,
         margin: 0,
@@ -2346,7 +2341,6 @@ function TaskRow({ task, showProject = true, depth = 0 }: { task: Task; showProj
   const isContextParent = isSearchContextParent(task, filters, allTasks)
   const ctx = useContextMenu()
   const isMobileTaskCard = useMedia('(max-width: 768px)')
-  const dndEnabled = useDndEnabled()
   const rowDragAttributes = !dndEnabled ? {} : isMobileTaskCard ? {} : attributes
   const rowDragListeners = !dndEnabled ? {} : isMobileTaskCard ? {} : listeners
   const handleDragAttributes = !dndEnabled ? {} : isMobileTaskCard ? attributes : {}
@@ -2438,10 +2432,8 @@ function TaskRow({ task, showProject = true, depth = 0 }: { task: Task; showProj
   // context menu can never open once a drag has begun (touch devices).
   const anyDragActive = useAnyDragActive()
 
-  // Long-press handler for touch devices: opens the context menu after a
-  // hold WITHOUT scrolling. The timer must fire AFTER the TouchSensor's
-  // activation window so it never competes with a real drag: TouchSensor
-  // activates at 120ms, this fires at 500ms — well outside that window.
+  // Long-press applies to the row body, never the dedicated mobile handle.
+  // Handle drags activate on movement and cancel any pending long-press.
   const longPressRef = useRef<{ t: ReturnType<typeof setTimeout> | null; x: number; y: number; fired: boolean }>({ t: null, x: 0, y: 0, fired: false })
   const cancelLongPress = () => { if (longPressRef.current.t) { clearTimeout(longPressRef.current.t); longPressRef.current.t = null } }
   // Keep a live ref of "is a drag active" so the (closured) long-press timer
@@ -2525,31 +2517,15 @@ function TaskRow({ task, showProject = true, depth = 0 }: { task: Task; showProj
   // Dim non-active members of the group currently being dragged.
   const inDragGroup = useIsInDragGroup(task.id)
 
-  // When THIS row is the one being dragged, skip rendering its content and
-  // collapse the wrapper to zero height so it takes no space in the layout.
-  // The DragOverlay / transform still shows the dragged row visually to the
-  // user, but the source position no longer reserves a placeholder slot.
-  if (isDragging) {
-    return (
-      <motion.div
-        ref={setNodeRef}
-        {...attributes}
-        {...listeners}
-        style={style}
-        aria-hidden='true'
-      />
-    )
-  }
-
   return (
-    <motion.div style={style} className={cn('task-row-wrap', lineAbove && 'has-line-above', lineBelow && 'has-line-below')}>
+    <motion.div style={style} aria-hidden={isDragging || undefined} className={cn('task-row-wrap', lineAbove && 'has-line-above', lineBelow && 'has-line-below')}>
       {/* Full-width insertion line above the row */}
       {lineAbove && <div className='task-drop-line task-drop-line-top' aria-hidden='true' />}
       <div
         ref={setNodeRef}
         {...rowDragAttributes}
         {...rowDragListeners}
-        className={cn('group panel p-3 task-row', dndEnabled && !selectionActive && 'cursor-grab active:cursor-grabbing task-row-draggable', isSelected && 'is-selected', isChecked && 'is-multiselected', nestHighlight && 'task-row-nest-target', isContextParent && 'task-row-search-context', inDragGroup && 'task-row-drag-group', selectionActive && 'select-none')}
+        className={cn('group panel p-3 task-row', isMobileTaskCard && dndEnabled && 'task-row-with-handle', dndEnabled && !selectionActive && 'cursor-grab active:cursor-grabbing task-row-draggable', isSelected && 'is-selected', isChecked && 'is-multiselected', nestHighlight && 'task-row-nest-target', isContextParent && 'task-row-search-context', inDragGroup && 'task-row-drag-group', selectionActive && 'select-none')}
         onClick={handleRowClick}
         onContextMenu={isMobileTaskCard ? (e) => { e.preventDefault(); e.stopPropagation() } : openMenu}
         onTouchStart={onTouchStart}
@@ -2803,6 +2779,26 @@ function collectVisibleIds(roots: Task[], all: Task[]): string[] {
 type DropMode = 'inside' | 'above' | 'below'
 type DropIndicator = { targetId: string; mode: DropMode } | null
 
+/** Hit-test the entire row using the actual finger/mouse position, not the
+ * overlay center (which is offset when grabbing a handle or a tall card).
+ * Target and mode travel together so highlight and committed drop agree. */
+const taskCollisionDetection: CollisionDetection = (args) => {
+  const collisions = args.pointerCoordinates ? pointerWithin(args) : closestCenter(args)
+  return collisions.map(collision => {
+    const rect = args.droppableRects.get(collision.id)!
+    const y = args.pointerCoordinates?.y ?? args.collisionRect.top + args.collisionRect.height / 2
+    const edge = Math.min(18, rect.height * 0.28)
+    const mode: DropMode = y < rect.top + edge ? 'above'
+      : y > rect.bottom - edge ? 'below' : 'inside'
+    return { ...collision, data: { ...collision.data, mode } }
+  })
+}
+
+function taskDropIndicator(e: DragMoveEvent): DropIndicator {
+  const collision = e.collisions?.[0]
+  return collision ? { targetId: String(collision.id), mode: collision.data?.mode as DropMode } : null
+}
+
 /* ============================================================
    Mobile drag preview — the ONLY drag-related visual rendered while a task is
    being dragged on touch devices. It is a static, non-interactive, slightly
@@ -2900,18 +2896,12 @@ function TaskList({ tasks, showProject = true, empty = 'No tasks', emptyDesc, em
     activeId: string
     targetId: string
   }>(null)
-  // Two sensors so drag works on both desktop (pointer) and touch devices.
-  // Touch: require a slightly longer intentional press-and-hold before a drag
-  // starts. This reduces accidental drags while the user is just scrolling or
-  // tapping near the drag handle. The `tolerance` window still lets normal
-  // vertical scrolling win: if the finger moves before the delay elapses, the
-  // touch stream is handed back to the browser for scrolling and no drag is
-  // initiated. Once activation succeeds the sensor takes exclusive control of
-  // the touch (see body.is-dnd-dragging rules in index.css) so there is zero
-  // gesture conflict mid-drag. Desktop (PointerSensor) is unchanged.
+  // One pointer stream for mouse, pen and touch: immediate, two-axis dragging
+  // after a small movement, with no competing delayed TouchSensor. Mobile
+  // handles opt out of native panning; swipes elsewhere still scroll normally.
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
-    useSensor(TouchSensor, { activationConstraint: { delay: 260, tolerance: 5 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   )
   const setUI = useUI(s => s.set)
   // Show only top-level tasks at the root list — children are rendered as a
@@ -2950,24 +2940,15 @@ function TaskList({ tasks, showProject = true, empty = 'No tasks', emptyDesc, em
     }
   }, [activeId])
 
-  /** Decide whether the cursor is over the top edge, bottom edge, or middle
-   *  of the over-row. Top/bottom → insertion line, middle → nest highlight. */
-  const computeMode = (e: DragMoveEvent): DropMode | null => {
-    const over = e.over
-    if (!over) return null
-    const rect = over.rect as { top: number; height: number; bottom?: number } | null
-    if (!rect) return 'inside'
-    // dnd-kit exposes the active draggable's translated client rect under
-    // active.rect.current.translated; we use its vertical center as the cursor proxy.
-    const tr = e.active.rect.current?.translated
-    if (!tr) return 'inside'
-    const cursorY = tr.top + tr.height / 2
-    // 28% top edge → above, 28% bottom edge → below, middle 44% → inside.
-    const edge = Math.min(18, rect.height * 0.28)
-    if (cursorY < rect.top + edge) return 'above'
-    if (cursorY > rect.top + rect.height - edge) return 'below'
-    return 'inside'
-  }
+  // Compute the invalid subtree once per drag, not on every pointer move.
+  // Hidden descendants stay mounted to preserve the touch target, but must
+  // never compete with visible parent/child rows for collision detection.
+  const blockedDropIds = useRef(new Set<string>())
+  const collisionDetection = React.useCallback<CollisionDetection>((args) => taskCollisionDetection({
+    ...args,
+    droppableContainers: args.droppableContainers.filter(container =>
+      container.id !== args.active.id && !blockedDropIds.current.has(String(container.id))),
+  }), [])
 
   const handleDragStart = (e: DragStartEvent) => {
     const activeId = String(e.active.id)
@@ -2986,6 +2967,17 @@ function TaskList({ tasks, showProject = true, empty = 'No tasks', emptyDesc, em
       dragGroupRef.current = null
       setDragGroup(null)
     }
+    const blocked = new Set(dragGroupRef.current || [activeId])
+    const childrenByParent = new Map<string, string[]>()
+    allTasks.forEach(task => {
+      if (!task.parentId) return
+      const children = childrenByParent.get(task.parentId) || []
+      children.push(task.id)
+      childrenByParent.set(task.parentId, children)
+    })
+    // Set iteration includes newly added children, covering arbitrary depth.
+    for (const id of blocked) childrenByParent.get(id)?.forEach(child => blocked.add(child))
+    blockedDropIds.current = blocked
     // Publish drag-active to the global tracker so every open context menu
     // / popover unmounts instantly and refuses to reopen until drag ends.
     dragActiveStore.set(true)
@@ -3001,28 +2993,10 @@ function TaskList({ tasks, showProject = true, empty = 'No tasks', emptyDesc, em
     }
   }
   const handleDragMove = (e: DragMoveEvent) => {
-    const over = e.over
-    if (!over) { setIndicator(null); return }
-    const overIdRaw = String(over.id)
-    const activeIdRaw = String(e.active.id)
-    // Nest-only droppable (legacy fallback) — always 'inside'.
-    if (overIdRaw.startsWith('nest:')) {
-      const targetId = overIdRaw.slice(5)
-      if (targetId === activeIdRaw) { setIndicator(null); return }
-      setIndicator({ targetId, mode: 'inside' })
-      return
-    }
-    if (overIdRaw === activeIdRaw) { setIndicator(null); return }
-    // Guard against dropping a parent onto its own descendant.
-    const byId = new Map(allTasks.map(t => [t.id, t]))
-    let cur: string | undefined = overIdRaw
-    while (cur) {
-      if (cur === activeIdRaw) { setIndicator(null); return }
-      cur = byId.get(cur)?.parentId
-    }
-    const mode = computeMode(e)
-    if (!mode) { setIndicator(null); return }
-    setIndicator({ targetId: overIdRaw, mode })
+    const next = taskDropIndicator(e)
+    // Most frames stay in the same zone. Avoid rerendering the whole task tree
+    // until the target or mode changes, while DragOverlay follows every move.
+    setIndicator(previous => previous?.targetId === next?.targetId && previous?.mode === next?.mode ? previous : next)
   }
   const handleDragCancel = () => {
     setActiveId(null)
@@ -3082,9 +3056,8 @@ function TaskList({ tasks, showProject = true, empty = 'No tasks', emptyDesc, em
   }
 
   const handleDragEnd = (e: DragEndEvent) => {
-    const ind = indicator
+    const ind = taskDropIndicator(e)
     const active = e.active
-    const over = e.over
     // Snapshot & clear the captured group so it never leaks into a later drag.
     const capturedGroup = dragGroupRef.current
     dragGroupRef.current = null
@@ -3093,15 +3066,13 @@ function TaskList({ tasks, showProject = true, empty = 'No tasks', emptyDesc, em
     setDragGroup(null)
     dragActiveStore.set(false)
     if (typeof document !== 'undefined') document.body.classList.remove('is-dnd-dragging')
-    if (!over || active.id === over.id) return
+    if (!ind || String(active.id) === ind.targetId) return
     const activeId = String(active.id)
-    const overIdRaw = String(over.id)
     const byId = new Map(allTasks.map(t => [t.id, t]))
     const activeTask = byId.get(activeId)
     if (!activeTask) return
 
-    // Resolve target task id (the nest:* droppable shares the same target id).
-    const targetId = overIdRaw.startsWith('nest:') ? overIdRaw.slice(5) : overIdRaw
+    const targetId = ind.targetId
     const overTask = byId.get(targetId)
     if (!overTask) return
 
@@ -3120,9 +3091,9 @@ function TaskList({ tasks, showProject = true, empty = 'No tasks', emptyDesc, em
       cur = byId.get(cur)?.parentId
     }
 
-    // Mode = whatever the live indicator showed at drop time; default to
-    // 'inside' for backwards compat with the dedicated nest droppable.
-    const mode: DropMode = ind && ind.targetId === targetId ? ind.mode : (overIdRaw.startsWith('nest:') ? 'inside' : 'inside')
+    // Use the final collision, never stale React state or a default nesting
+    // fallback when a quick release changes targets between renders.
+    const mode = ind.mode
 
     // Group drags skip the single-task Done confirmation and move the whole
     // selection at once (bulkSetParent handles status propagation upward).
@@ -3178,9 +3149,11 @@ function TaskList({ tasks, showProject = true, empty = 'No tasks', emptyDesc, em
       <HideDoneCtx.Provider value={hideDoneChildren}>
       <DndContext
         sensors={sensors}
-        collisionDetection={closestCenter}
+        collisionDetection={collisionDetection}
+        measuring={{ droppable: { strategy: MeasuringStrategy.Always } }}
         onDragStart={handleDragStart}
         onDragMove={handleDragMove}
+        onDragOver={handleDragMove}
         onDragCancel={handleDragCancel}
         onDragEnd={handleDragEnd}
       >

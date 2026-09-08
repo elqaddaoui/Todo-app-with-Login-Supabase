@@ -1829,10 +1829,10 @@ html:not(.dark).compact-mode .task-row .compact-meta-priority[data-priority='low
   transform: translate(-2px, -3px);
   animation: task-drop-line-in .18s ease-out;
 }
-.task-drop-line-top{ margin-bottom: 6px; }
+.task-drop-line-top{ margin-bottom: 0; }
 .task-drop-line-top::before{ top: -1px; }
 .task-drop-line-top::after{ top: -1px; }
-.task-drop-line-bottom{ margin-top: 6px; }
+.task-drop-line-bottom{ margin-top: 0; }
 .task-drop-line-bottom::before{ bottom: -1px; }
 .task-drop-line-bottom::after{ bottom: -1px; }
 @keyframes task-drop-line-in {
@@ -2270,18 +2270,18 @@ html:not(.dark).compact-mode .task-row .compact-meta-priority[data-priority='low
 }
 
 /* ============================================================
-   v5 UPDATE — desktop keeps whole-row drag, mobile uses a compact handle
+   Task dragging — desktop whole-row activation, mobile full-height handle
    ============================================================ */
 
 .task-drag-handle{
   display: none;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
-  flex: 0 0 28px;
+  width: 44px;
+  min-height: 44px;
+  flex: 0 0 44px;
   align-self: flex-start;
-  margin-top: -2px;
+  margin-top: 0;
   border-radius: 8px;
   color: hsl(var(--muted-foreground));
   background: transparent;
@@ -2291,8 +2291,8 @@ html:not(.dark).compact-mode .task-row .compact-meta-priority[data-priority='low
   -webkit-tap-highlight-color: transparent;
 }
 .task-drag-handle svg{
-  width: 16px;
-  height: 16px;
+  width: 20px;
+  height: 20px;
   opacity: .72;
 }
 .task-drag-handle:hover{
@@ -2380,14 +2380,38 @@ body.is-dnd-dragging *{
   box-shadow: 0 24px 48px -10px rgba(0,0,0,.6), 0 0 0 1px hsl(var(--focus) / .45);
 }
 
-/* Mobile: while dragging, keep the row visible above the rest and surface only
-   the compact handle as the drag activator. */
+/* A full-height, 44px-wide rail is easy to grab anywhere down the card.
+   Reserve its space so it never covers task content or interactive controls.
+   Compact tables put the same handle first, reachable without scrolling to
+   the last metadata column; the rest of the row remains a normal scroller. */
 @media (max-width: 768px){
-  .task-row.task-row-draggable.is-dragging{
-    transform: scale(1);
-  }
+  .task-row.task-row-draggable{ touch-action: pan-x pan-y; }
   .task-drag-handle{
     display: inline-flex;
+    cursor: grab;
+  }
+  .task-drag-handle:active{ cursor: grabbing; }
+  .task-drag-handle:focus-visible{
+    outline: 2px solid hsl(var(--focus));
+    outline-offset: -2px;
+  }
+  html:not(.compact-mode) .task-row.task-row-with-handle{
+    position: relative;
+    padding-right: 56px;
+    min-height: 56px;
+  }
+  html:not(.compact-mode) .task-row .task-drag-handle{
+    position: absolute;
+    right: 4px;
+    top: 4px;
+    bottom: 4px;
+    align-self: stretch;
+  }
+  .compact-mode .task-row{ min-height: 48px; }
+  .compact-mode .task-row .task-drag-handle{
+    order: -1;
+    align-self: stretch;
+    margin-block: 0;
   }
 }
 
